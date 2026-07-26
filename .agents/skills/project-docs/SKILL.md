@@ -77,8 +77,8 @@ func ParseConfig(path string) (*Config, error) { ... }
 /// assert_eq!(split_once("a:b", ':'), Some(("a", "b")));
 /// ```
 ///
-/// # Errors
-/// Returns `None` if `delimiter` is not found.
+/// # Returns
+/// Returns `None` if `delimiter` is not found in `input`.
 pub fn split_once(input: &str, delimiter: char) -> Option<(&str, &str)> { ... }
 ```
 
