@@ -382,6 +382,10 @@ For anything the codebase already shows, prefer a pointer to the authoritative f
 If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
 Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
 
+# Documentation
+If this task adds a new public function, class, module, integration point, or feature, or changes an existing public API, load \`$FM_ROOT/.agents/skills/project-docs/SKILL.md\` and follow its requirements.
+You do not need to be told to write docs; use your own judgment based on whether the task has a public-surface change.
+
 $DOD
 EOF
 echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
