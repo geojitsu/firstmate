@@ -4,6 +4,7 @@ description: >-
   Fleet-wide documentation standards for crewmates.
   Covers docstring requirements for every public function and Nuxt Docus format for feature and API documentation.
   Loaded automatically via the ship brief when a task has a public-surface change.
+icon: 'i-heroicons-document-text'
 user-invocable: false
 metadata:
   internal: true
@@ -91,20 +92,11 @@ pub fn split_once(input: &str, delimiter: char) -> Option<(&str, &str)> { ... }
 
 When the task adds a new feature, new public API, new integration point, or architectural change, create or update documentation files in `/docs` at the project root using Nuxt Docus format.
 
-### When documentation is required
+### Where documentation goes
 
-Documentation is required when the task:
-- Adds a new public function, class, module, or integration point.
-- Changes an existing public API signature or behavior.
-- Adds a new feature visible to callers or users.
-- Introduces an architectural change or new system boundary.
-
-Documentation is NOT required when the task:
-- Fixes a bug with no API change.
-- Refactors internals with no public-surface change.
-- Adds or changes tests only.
-- Updates dependencies only.
-- Makes only configuration or build changes.
+Before writing or updating any documentation, read `doc-routing.json` in this skill directory and match your change against the rules.
+Each rule maps a situation (`when`) to a target path (`use`) with the reasoning (`why`).
+Multiple rules can match — write or update all matching docs in the same change.
 
 ### Docus file format
 
@@ -114,7 +106,16 @@ Every `.md` file in `/docs` must begin with YAML frontmatter:
 ---
 title: Page Title
 description: One-sentence description shown in navigation and meta.
+icon: 'i-heroicons-bolt'
+tags: ['tag-one', 'tag-two']
 ---
+```
+
+Each subdirectory must include a `_dir.yml` with `title` and `icon` to control sidebar display:
+
+```yaml
+title: Section Name
+icon: i-heroicons-cpu-chip
 ```
 
 The body uses standard Markdown plus MDC (Markdown Components) syntax for Vue components.
@@ -147,17 +148,10 @@ yarn add package-name
 ::
 ```
 
-### Required `/docs` structure
+### Naming convention
 
-Files and directories must be numerically prefixed and kebab-cased using the pattern `N.kebab-name`.
-The number controls Docus navigation order.
-
-```
-docs/
-  1.overview.md       # Project overview (replaces or supplements README)
-  2.architecture.md   # System design, component relationships, data flow
-  3.<feature>.md      # One file per major feature or integration point, numbered in order
-```
+Files and directories must be numerically prefixed and kebab-cased: `N.kebab-name`.
+The number controls Docus sidebar order.
 
 ### Four-section template for every doc page
 

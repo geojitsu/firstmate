@@ -1,0 +1,49 @@
+{
+  "rules": [
+    {
+      "when": "Setup steps, commands, or usage instructions changed.",
+      "use": { "path": "README.md" },
+      "why": "README must always reflect current reality and be readable in under a minute."
+    },
+    {
+      "when": "A new feature, integration point, or system boundary was introduced.",
+      "use": { "path": "docs/1.architecture/" },
+      "why": "Architecture docs explain the current shape — how pieces fit together technically."
+    },
+    {
+      "when": "A public function, class, endpoint, or module signature was added or changed.",
+      "use": { "path": "docs/2.api/" },
+      "why": "API reference tracks the public surface. Prefer auto-generation; hand-update only when no generator exists."
+    },
+    {
+      "when": "Auth flow, a usage pattern, or a worked example changed in a way a caller would notice.",
+      "use": { "path": "docs/2.api/guides/" },
+      "why": "Guides are hand-written with no CI safety net — update in the same change, not later."
+    },
+    {
+      "when": "An env var or config option was added, removed, or renamed.",
+      "use": { "path": "docs/4.configuration.md" },
+      "why": "Configuration docs are what people reach for mid-setup-failure. A stale entry is worse than a missing one."
+    },
+    {
+      "when": "A significant architectural decision was made that a new contributor would reasonably make differently without knowing the context.",
+      "use": { "path": "docs/adr/", "filename": "NNNN-short-title.md" },
+      "why": "ADRs capture the why behind decisions, not the current shape. Internal only — not synced to the docs site."
+    },
+    {
+      "when": "Something broke and took real diagnosis to fix.",
+      "use": { "path": "docs/bugs/", "filename": "YYYY-MM-DD-short-title.md" },
+      "why": "Bug write-ups prevent re-diagnosing the same class of problem, including by future agents. Internal only."
+    },
+    {
+      "when": "There is a procedure to follow when a specific operational situation occurs.",
+      "use": { "path": "docs/runbooks/", "filename": "situation-name.md" },
+      "why": "Runbooks are written before something breaks as a procedure to follow, not after as a record. Internal only."
+    }
+  ],
+  "default": {
+    "path": "docs/index.md",
+    "why": "If no rule matches but documentation is warranted, update the project landing page."
+  },
+  "note": "Multiple rules can match. Write or update all matching docs in the same change, not later."
+}
