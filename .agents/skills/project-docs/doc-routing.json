@@ -1,4 +1,51 @@
 {
+  "directories": [
+    {
+      "path": "docs/index.md",
+      "purpose": "Project landing page — what it is, its goals, high-level overview.",
+      "synced": true
+    },
+    {
+      "path": "docs/1.architecture/",
+      "purpose": "System design, component relationships, data flow. Explains the current shape; ADRs explain why.",
+      "synced": true
+    },
+    {
+      "path": "docs/2.api/",
+      "purpose": "API reference — prefer auto-generated; hand-update only when no generator exists.",
+      "synced": true
+    },
+    {
+      "path": "docs/2.api/guides/",
+      "purpose": "Hand-written usage guides — auth flow, patterns, worked examples. No CI safety net.",
+      "synced": true
+    },
+    {
+      "path": "docs/3.usage/",
+      "purpose": "End-user onboarding, features, FAQ. Omit entirely for projects with no end-user surface.",
+      "synced": true
+    },
+    {
+      "path": "docs/4.configuration.md",
+      "purpose": "Every env var and config option — required vs optional, example values.",
+      "synced": true
+    },
+    {
+      "path": "docs/adr/",
+      "purpose": "Architecture Decision Records — why we chose X over Y. Internal only.",
+      "synced": false
+    },
+    {
+      "path": "docs/bugs/",
+      "purpose": "Post-hoc bug write-ups — root cause, fix, prevention. Internal only.",
+      "synced": false
+    },
+    {
+      "path": "docs/runbooks/",
+      "purpose": "Operational procedures written before something breaks. Internal only.",
+      "synced": false
+    }
+  ],
   "rules": [
     {
       "when": "Setup steps, commands, or usage instructions changed.",

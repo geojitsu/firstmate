@@ -92,11 +92,9 @@ pub fn split_once(input: &str, delimiter: char) -> Option<(&str, &str)> { ... }
 
 When the task adds a new feature, new public API, new integration point, or architectural change, create or update documentation files in `/docs` at the project root using Nuxt Docus format.
 
-### Where documentation goes
-
-Before writing or updating any documentation, read `doc-routing.json` in this skill directory and match your change against the rules.
-Each rule maps a situation (`when`) to a target path (`use`) with the reasoning (`why`).
-Multiple rules can match — write or update all matching docs in the same change.
+**Before writing a single doc:** read `doc-routing.json` in this skill directory.
+The `directories` array defines the canonical `docs/` structure and which folders sync to the public docs site vs. remain internal.
+The `rules` array maps your change to the correct target path — match against it and write to every path that matches, in the same change.
 
 ### Docus file format
 
