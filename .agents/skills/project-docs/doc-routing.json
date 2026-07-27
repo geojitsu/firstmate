@@ -1,6 +1,11 @@
 {
   "directories": [
     {
+      "path": "README.md",
+      "purpose": "Project overview for developers — setup, commands, usage. Must be readable in under a minute.",
+      "synced": false
+    },
+    {
       "path": "docs/index.md",
       "purpose": "Project landing page — what it is, its goals, high-level overview.",
       "synced": true
