@@ -36,6 +36,11 @@
       "synced": true
     },
     {
+      "path": "docs/guide/",
+      "purpose": "Product direction — strategy, roadmap, feature backlog, brainstorming. Ordered by priority, not implementation status.",
+      "synced": true
+    },
+    {
       "path": "docs/adr/",
       "purpose": "Architecture Decision Records — why we chose X over Y. Internal only.",
       "synced": false
@@ -76,6 +81,11 @@
       "when": "An env var or config option was added, removed, or renamed.",
       "use": { "path": "docs/4.configuration.md" },
       "why": "Configuration docs are what people reach for mid-setup-failure. A stale entry is worse than a missing one."
+    },
+    {
+      "when": "A new feature idea, product direction decision, or implementation strategy is worth capturing before or during development.",
+      "use": { "path": "docs/guide/", "filename": "descriptive-name.md" },
+      "why": "Guide docs capture the why and what-next of the product — roadmap, strategy, feature backlog. Distinct from ADRs (past decisions) and architecture docs (current shape)."
     },
     {
       "when": "A significant architectural decision was made that a new contributor would reasonably make differently without knowing the context.",
