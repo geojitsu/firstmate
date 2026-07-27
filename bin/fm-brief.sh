@@ -383,8 +383,11 @@ If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, ad
 Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
 
 # Documentation
-If this task adds a new public function, class, module, integration point, or feature, or changes an existing public API, load \`$FM_ROOT/.agents/skills/project-docs/SKILL.md\` and follow its requirements.
-You do not need to be told to write docs; use your own judgment based on whether the task has a public-surface change.
+Read \`$FM_ROOT/.agents/skills/project-docs/doc-routing.json\` and match your change against every rule in \`rules[]\`.
+Write or update all matching docs in the same change - not later, not in a follow-up commit.
+The \`directories[]\` array defines the canonical project docs structure.
+Load \`$FM_ROOT/.agents/skills/project-docs/SKILL.md\` for Docus format, docstring requirements, and file templates.
+Documentation is required on every delivery tier - no-mistakes, direct-PR, and local-only alike.
 
 $DOD
 EOF
