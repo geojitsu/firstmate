@@ -277,6 +277,7 @@ The path's worker, automated gates, and captain approval remain authoritative:
 - **local-only** has the worker stop with a clean ready branch, then waits for the configured merge authority before firstmate uses the guarded fast-forward merge path.
 
 Documentation is required on all three tiers; the ship brief's `# Documentation` section and `project-docs` skill own the contract, and missing docs are never acceptable on any path.
+Versioning follows the same automatic-bump/escalate-on-breaking-change split; the ship brief's `# Versioning` section and `version-management` skill own that contract.
 
 Delivery mode and `yolo` are orthogonal.
 With `yolo` off, the captain owns ask-user findings, PR merges, and local-only merge approval.

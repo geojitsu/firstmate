@@ -389,6 +389,10 @@ The \`directories[]\` array defines the canonical project docs structure.
 Load \`$FM_ROOT/.agents/skills/project-docs/SKILL.md\` for Docus format, docstring requirements, and file templates.
 Documentation is required on every delivery tier - no-mistakes, direct-PR, and local-only alike.
 
+# Versioning
+Load \`$FM_ROOT/.agents/skills/version-management/SKILL.md\` for the full semantic-versioning protocol.
+Bump PATCH or MINOR automatically from the branch's Conventional Commit types, in the same commit as the change; never bump MAJOR yourself - a breaking change is a \`needs-decision:\` finding.
+
 $DOD
 EOF
 echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
