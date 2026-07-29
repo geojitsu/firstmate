@@ -36,7 +36,7 @@ Framework-agnostic, using whatever the test framework already supports natively:
 Your project worktree is disposable and torn down after the task, so evidence must not be left only there.
 
 Write every captured screenshot and video, plus a short `manifest.md` describing what each file shows and at what point in the run, to `data/<task-id>/e2e-review/` in the firstmate home.
-This is a sibling location to the already-established `data/<task-id>/report.md` and the status file, both of which are named exceptions to "stay inside this worktree; modify nothing outside it".
+This is a sibling location to the already-established `data/<task-id>/report.md` and the status file, both of which are named exceptions to the ship/scout brief's worktree-isolation rule.
 This is a third such named exception, not a general license to write elsewhere.
 
 ## Your responsibility boundary
