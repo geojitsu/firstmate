@@ -82,7 +82,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   secondmates.md      secondmate routing table; firstmate-private, maintained by fm-home-seed.sh (section 6)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
-  <id>/e2e-review/   visual evidence (screenshots, video, manifest.md) from a task that ran the project's E2E suite; conditional, absent otherwise; see e2e-visual-review skill
+  <id>/e2e-review/   visual evidence (screenshots, video, manifest.md) from a task whose test run exercised the running app (E2E, UI/browser-driven, or visual regression); conditional, absent otherwise; see e2e-visual-review skill
 projects/            cloned repos; gitignored; READ-ONLY for you
 state/               volatile runtime signals; gitignored
   <id>.status        appended by crewmates: "<state>: <note>" wake-event lines, not current-state truth
@@ -113,6 +113,7 @@ state/               volatile runtime signals; gitignored
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
 .no-mistakes/        local validation state and evidence; gitignored
+.lavish/<project>/<type>-<task-id>/review.html   built captain review pages (`<type>` = feature-review or bug-detection) from crewmate-captured app-test evidence; LOCAL, gitignored, durable across worktree teardown; see app-test-review skill
 ```
 
 A `state/<id>.status` line is a wake event, not current-state truth; `bin/fm-crew-state.sh` owns current-state reconciliation.
@@ -279,7 +280,7 @@ The path's worker, automated gates, and captain approval remain authoritative:
 
 Documentation is required on all three tiers; the ship brief's `# Documentation` section and `project-docs` skill own the contract, and missing docs are never acceptable on any path.
 Versioning follows the same automatic-bump/escalate-on-breaking-change split; the ship brief's `# Versioning` section and `version-management` skill own that contract.
-Any task that actually runs a project's E2E test suite captures visual evidence for captain review; the ship brief's `# E2E Visual Review` section and `e2e-visual-review` skill own that contract.
+Any task whose test run exercises the running application (E2E, UI/browser-driven, or visual regression - not plain unit/logic tests) captures visual evidence for captain review; the ship brief's `# E2E Visual Review` section and `e2e-visual-review` skill own that contract.
 
 Delivery mode and `yolo` are orthogonal.
 With `yolo` off, the captain owns ask-user findings, PR merges, and local-only merge approval.
@@ -314,6 +315,7 @@ Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_he
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine authority.
 For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.
+When the reporting task left evidence at `data/<task-id>/e2e-review/`, load `app-test-review` and build the captain's review page before or alongside that PR-ready or `done` report; this is the default review artifact for that change, not an optional extra.
 
 Tear down a ship task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.
@@ -482,6 +484,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 - `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
+- `app-test-review` - load whenever a task's PR-ready or `done` report points at evidence under `data/<task-id>/e2e-review/`, before that captain-facing checkpoint; builds the interactive Lavish review page from the crewmate's captured evidence.
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the X-mode configuration blocker, and on any milestone or terminal wake for an X-mode-linked task before posting its completion follow-up; relevant only when X mode is on.
 - `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.

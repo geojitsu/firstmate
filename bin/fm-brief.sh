@@ -264,7 +264,7 @@ The report is the only thing that survives, so anything worth keeping must be in
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
 # E2E Visual Review
-Only if this task actually runs the project's E2E test suite: load \`$FM_ROOT/.agents/skills/e2e-visual-review/SKILL.md\` for the full capture-and-placement protocol.
+Only if this task runs a test suite that exercises the running application - E2E, UI/browser-driven, or visual regression, never plain unit/logic tests: load \`$FM_ROOT/.agents/skills/e2e-visual-review/SKILL.md\` for the full capture-and-placement protocol.
 \`$DATA/$ID/e2e-review/\` is a permitted exception to "stay inside this worktree", alongside the report and the status file.
 
 # Definition of done
@@ -356,7 +356,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+2. Stay inside this worktree; the only files you may write outside it are the status file below and the E2E visual-review evidence path when that section below applies.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -398,7 +398,7 @@ Load \`$FM_ROOT/.agents/skills/version-management/SKILL.md\` for the full semant
 Bump PATCH or MINOR automatically from the branch's Conventional Commit types, in the same commit as the change; never bump MAJOR yourself - a breaking change is a \`needs-decision:\` finding.
 
 # E2E Visual Review
-Only if this task actually runs the project's E2E test suite: load \`$FM_ROOT/.agents/skills/e2e-visual-review/SKILL.md\` for the full capture-and-placement protocol.
+Only if this task runs a test suite that exercises the running application - E2E, UI/browser-driven, or visual regression, never plain unit/logic tests: load \`$FM_ROOT/.agents/skills/e2e-visual-review/SKILL.md\` for the full capture-and-placement protocol.
 \`$DATA/$ID/e2e-review/\` is a permitted exception to "stay inside this worktree", alongside the status file.
 
 $DOD

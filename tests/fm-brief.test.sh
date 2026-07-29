@@ -152,6 +152,10 @@ test_ship_e2e_visual_review_pointer() {
     "ship brief did not name the e2e-review evidence path"
   assert_grep "permitted exception to \"stay inside this worktree\", alongside the status file" "$brief" \
     "ship brief did not name the e2e-review path as a worktree-isolation exception"
+  assert_grep "test suite that exercises the running application - E2E, UI/browser-driven, or visual regression, never plain unit/logic tests" "$brief" \
+    "ship brief did not carry the broadened app-facing-test trigger scope"
+  assert_grep "the only files you may write outside it are the status file below and the E2E visual-review evidence path" "$brief" \
+    "ship brief Rule 2 still contradicts its own E2E Visual Review worktree exception"
   pass "fm-brief.sh: ship briefs point at the e2e-visual-review protocol"
 }
 
@@ -171,6 +175,8 @@ test_scout_e2e_visual_review_pointer() {
     "scout brief did not name the e2e-review evidence path"
   assert_grep "permitted exception to \"stay inside this worktree\", alongside the report and the status file" "$brief" \
     "scout brief did not name the e2e-review path as a worktree-isolation exception"
+  assert_grep "test suite that exercises the running application - E2E, UI/browser-driven, or visual regression, never plain unit/logic tests" "$brief" \
+    "scout brief did not carry the broadened app-facing-test trigger scope"
   pass "fm-brief.sh: scout briefs point at the e2e-visual-review protocol"
 }
 

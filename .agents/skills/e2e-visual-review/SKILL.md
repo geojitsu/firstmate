@@ -1,9 +1,9 @@
 ---
 name: e2e-visual-review
 description: >-
-  Fleet-wide convention for capturing visual evidence whenever a task actually runs a project's E2E test suite.
+  Fleet-wide convention for capturing visual evidence whenever a task runs a test suite that exercises the running application - E2E suites, UI/browser-driven tests, or visual regression checks - as distinct from plain unit or logic tests.
   Covers what to capture, where it goes as a named exception to worktree isolation, and the crewmate's responsibility boundary against firstmate's own review-page tooling.
-  Loaded automatically via the ship brief for every ship task.
+  Loaded via the ship and scout brief pointer whenever that scope applies.
 icon: 'i-heroicons-film'
 user-invocable: false
 metadata:
@@ -12,14 +12,15 @@ metadata:
 
 # e2e-visual-review
 
-Load this on any task, ship or scout, that actually runs a project's E2E test suite as part of its work.
+Load this on any task, ship or scout, whose test run exercises the running application - an E2E suite, UI/browser-driven tests, or a visual regression check.
 It defines what visual evidence to capture from that run, where to leave it, and where your responsibility ends.
 
 ## Scope
 
-Applies only when your task actually executes a project's E2E test suite.
-A project with no E2E test suite means this section is a no-op: do not add one, invent one, or run an unrelated test suite just to trigger this protocol.
-Do not start a separate, redundant E2E run solely to record it; capture happens as part of the same run you were already performing for the task.
+Applies whenever your task runs a test suite that exercises the running application: E2E suites, UI/browser-driven tests, and visual regression checks.
+Plain unit or logic tests never trigger this - they have nothing meaningful to screenshot, and keep reporting pass/fail exactly as before.
+A project with no app-facing test suite means this section is a no-op: do not add one, invent one, or run an unrelated test suite just to trigger this protocol.
+Do not start a separate, redundant run solely to record it; capture happens as part of the same run you were already performing for the task.
 
 ## What to capture
 
@@ -41,5 +42,5 @@ This is a third such named exception, not a general license to write elsewhere.
 ## Your responsibility boundary
 
 You do not invoke `lavish-axi` yourself or otherwise manage a Lavish review-session lifecycle.
-Building or opening the actual review page from your evidence is firstmate's own operational job, not yours.
+Building or opening the actual review page from your evidence is firstmate's own operational job, not yours - see `app-test-review` for that side of the contract.
 Your scope ends at producing well-located, well-labeled evidence, plus a one-line mention of the `data/<task-id>/e2e-review/` path in your `done`/status report so firstmate knows where to find it.

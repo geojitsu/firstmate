@@ -112,6 +112,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/app-test-review/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/ask-user-authority/SKILL.md",
       "audience": "agent-runtime"
     },
