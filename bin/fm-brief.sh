@@ -263,6 +263,10 @@ The report is the only thing that survives, so anything worth keeping must be in
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
+# E2E Visual Review
+Only if this task actually runs the project's E2E test suite: load \`$FM_ROOT/.agents/skills/e2e-visual-review/SKILL.md\` for the full capture-and-placement protocol.
+\`$DATA/$ID/e2e-review/\` is a permitted exception to "stay inside this worktree", alongside the report and the status file.
+
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
