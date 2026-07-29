@@ -393,6 +393,10 @@ Documentation is required on every delivery tier - no-mistakes, direct-PR, and l
 Load \`$FM_ROOT/.agents/skills/version-management/SKILL.md\` for the full semantic-versioning protocol.
 Bump PATCH or MINOR automatically from the branch's Conventional Commit types, in the same commit as the change; never bump MAJOR yourself - a breaking change is a \`needs-decision:\` finding.
 
+# E2E Visual Review
+Only if this task actually runs the project's E2E test suite: load \`$FM_ROOT/.agents/skills/e2e-visual-review/SKILL.md\` for the full capture-and-placement protocol.
+\`$DATA/$ID/e2e-review/\` is a permitted exception to "stay inside this worktree", alongside the status file.
+
 $DOD
 EOF
 echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
