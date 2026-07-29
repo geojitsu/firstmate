@@ -136,6 +136,50 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+test_ship_e2e_visual_review_pointer() {
+  local home id brief
+  home="$TMP_ROOT/e2e-visual-review-home"
+  mkdir -p "$home/data"
+  id="brief-e2e-visual-review-c2"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  assert_grep "# E2E Visual Review" "$brief" \
+    "ship brief missing the E2E Visual Review section"
+  assert_grep "$ROOT/.agents/skills/e2e-visual-review/SKILL.md" "$brief" \
+    "ship brief did not point at the e2e-visual-review skill"
+  assert_grep "$home/data/$id/e2e-review/" "$brief" \
+    "ship brief did not name the e2e-review evidence path"
+  assert_grep "permitted exception to \"stay inside this worktree\", alongside the status file" "$brief" \
+    "ship brief did not name the e2e-review path as a worktree-isolation exception"
+  assert_grep "test suite that exercises the running application - E2E, UI/browser-driven, or visual regression, never plain unit/logic tests" "$brief" \
+    "ship brief did not carry the broadened app-facing-test trigger scope"
+  assert_grep "the only files you may write outside it are the status file below and the E2E visual-review evidence path" "$brief" \
+    "ship brief Rule 2 still contradicts its own E2E Visual Review worktree exception"
+  pass "fm-brief.sh: ship briefs point at the e2e-visual-review protocol"
+}
+
+test_scout_e2e_visual_review_pointer() {
+  local home id brief
+  home="$TMP_ROOT/e2e-visual-review-scout-home"
+  mkdir -p "$home/data"
+  id="brief-e2e-visual-review-scout-c3"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "scout brief was not scaffolded"
+  assert_grep "# E2E Visual Review" "$brief" \
+    "scout brief missing the E2E Visual Review section"
+  assert_grep "$ROOT/.agents/skills/e2e-visual-review/SKILL.md" "$brief" \
+    "scout brief did not point at the e2e-visual-review skill"
+  assert_grep "$home/data/$id/e2e-review/" "$brief" \
+    "scout brief did not name the e2e-review evidence path"
+  assert_grep "permitted exception to \"stay inside this worktree\", alongside the report and the status file" "$brief" \
+    "scout brief did not name the e2e-review path as a worktree-isolation exception"
+  assert_grep "test suite that exercises the running application - E2E, UI/browser-driven, or visual regression, never plain unit/logic tests" "$brief" \
+    "scout brief did not carry the broadened app-facing-test trigger scope"
+  pass "fm-brief.sh: scout briefs point at the e2e-visual-review protocol"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -388,6 +432,8 @@ test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_ship_e2e_visual_review_pointer
+test_scout_e2e_visual_review_pointer
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout

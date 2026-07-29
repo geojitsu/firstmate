@@ -243,7 +243,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 
 # Rules
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+2. Stay inside this worktree; the only files you may write outside it are the report, the status file below, and the E2E visual-review evidence path when that section below applies.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -262,6 +262,10 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+# E2E Visual Review
+Only if this task runs a test suite that exercises the running application - E2E, UI/browser-driven, or visual regression, never plain unit/logic tests: load \`$FM_ROOT/.agents/skills/e2e-visual-review/SKILL.md\` for the full capture-and-placement protocol.
+\`$DATA/$ID/e2e-review/\` is a permitted exception to "stay inside this worktree", alongside the report and the status file.
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -352,7 +356,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+2. Stay inside this worktree; the only files you may write outside it are the status file below and the E2E visual-review evidence path when that section below applies.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -392,6 +396,10 @@ Documentation is required on every delivery tier - no-mistakes, direct-PR, and l
 # Versioning
 Load \`$FM_ROOT/.agents/skills/version-management/SKILL.md\` for the full semantic-versioning protocol.
 Bump PATCH or MINOR automatically from the branch's Conventional Commit types, in the same commit as the change; never bump MAJOR yourself - a breaking change is a \`needs-decision:\` finding.
+
+# E2E Visual Review
+Only if this task runs a test suite that exercises the running application - E2E, UI/browser-driven, or visual regression, never plain unit/logic tests: load \`$FM_ROOT/.agents/skills/e2e-visual-review/SKILL.md\` for the full capture-and-placement protocol.
+\`$DATA/$ID/e2e-review/\` is a permitted exception to "stay inside this worktree", alongside the status file.
 
 $DOD
 EOF
