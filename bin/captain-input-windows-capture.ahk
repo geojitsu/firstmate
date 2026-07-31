@@ -64,73 +64,105 @@ ShutdownGdiPlus(*) {
     }
 }
 
+; Reentrancy guard for CaptainInputCapture (see the function's own header
+; comment for why this exists).
+g_CaptureInProgress := false
+
 OnClipboardChange(CaptainInputCapture)
 
 CaptainInputCapture(DataType) {
-    ; DataType: 0 = cleared, 1 = text, 2 = image/other binary format.
-    if (DataType != 2)
+    ; RunWait below pumps the Windows message queue while it waits for
+    ; scp/ssh to exit, and every trace of this bug across every round has
+    ; shown OnClipboardChange firing twice per single screenshot (Snip &
+    ; Sketch writes an intermediate clipboard image before the final one).
+    ; If the second notification arrives while the first invocation is
+    ; still mid-flight inside a RunWait call, AHK can launch a second,
+    ; concurrent thread of this same function - two invocations touching
+    ; the clipboard and GDI+ objects at once, which is a plausible cause of
+    ; the corrupted global state and crashes seen in earlier rounds (up to
+    ; and including a crash inside ShutdownGdiPlus at script exit, long
+    ; after the capture that corrupted things had returned).
+    ; AHK v2's own OnClipboardChange docs name this exact hazard and
+    ; recommend Critical: "If the clipboard changes while a callback is
+    ; already running, that notification event is lost. If this is
+    ; undesirable, use Critical" - Critical makes AHK buffer/defer a second
+    ; notification instead of dispatching it concurrently. g_CaptureInProgress
+    ; is a second, explicit guard in case of any interruption Critical alone
+    ; does not cover.
+    Critical
+    global g_CaptureInProgress
+    if g_CaptureInProgress
         return
-    if !ClipboardAll()
-        return
+    g_CaptureInProgress := true
+    try {
+        ; DataType: 0 = cleared, 1 = text, 2 = image/other binary format.
+        if (DataType != 2)
+            return
+        if !ClipboardAll()
+            return
 
-    id := FormatTime(, "yyyyMMdd-HHmmss") "-" Random(1000, 9999)
-    tempDir := A_Temp "\captain-input"
-    DirCreate(tempDir)
-    localPng := tempDir "\" id ".png"
+        id := FormatTime(, "yyyyMMdd-HHmmss") "-" Random(1000, 9999)
+        tempDir := A_Temp "\captain-input"
+        DirCreate(tempDir)
+        localPng := tempDir "\" id ".png"
 
-    ; Save the clipboard image via a hidden GDI+ round trip through a
-    ; temporary picture control - the simplest way to get PNG bytes on disk
-    ; from AHK v2 without an extra imaging library.
-    if !SaveClipboardImageAsPng(localPng)
-        return
+        ; Save the clipboard image via a hidden GDI+ round trip through a
+        ; temporary picture control - the simplest way to get PNG bytes on
+        ; disk from AHK v2 without an extra imaging library.
+        if !SaveClipboardImageAsPng(localPng)
+            return
 
-    remoteTmpPng := FM_REMOTE_DROP_DIR "/.tmp-" id ".png"
-    remoteFinalPng := FM_REMOTE_DROP_DIR "/" id ".png"
-    remoteTmpJson := FM_REMOTE_DROP_DIR "/.tmp-" id ".json"
-    remoteFinalJson := FM_REMOTE_DROP_DIR "/" id ".json"
+        remoteTmpPng := FM_REMOTE_DROP_DIR "/.tmp-" id ".png"
+        remoteFinalPng := FM_REMOTE_DROP_DIR "/" id ".png"
+        remoteTmpJson := FM_REMOTE_DROP_DIR "/.tmp-" id ".json"
+        remoteFinalJson := FM_REMOTE_DROP_DIR "/" id ".json"
 
-    ; 1. Upload the payload to a temp name, then atomically publish it with a
-    ;    remote rename - never let the watcher see a partially-written file.
-    ;    RunWait returns the child process's exit code directly in AHK v2 -
-    ;    check each of the 4 scp/ssh calls below and stop on the first
-    ;    failure, rather than silently continuing past a failed upload step
-    ;    (a prior version did this, and a failed json upload/publish went
-    ;    unnoticed while the png still landed on the host).
-    exitCode := RunWait('scp -q "' localPng '" "' FM_USER '@' FM_HOST ':' remoteTmpPng '"',, "Hide")
-    if (exitCode != 0) {
-        TrayTip("Captain input", "Screenshot capture failed: png upload failed (scp exit " exitCode ")", 3)
-        return
+        ; 1. Upload the payload to a temp name, then atomically publish it
+        ;    with a remote rename - never let the watcher see a
+        ;    partially-written file. RunWait returns the child process's
+        ;    exit code directly in AHK v2 - check each of the 4 scp/ssh
+        ;    calls below and stop on the first failure, rather than
+        ;    silently continuing past a failed upload step (a prior
+        ;    version did this, and a failed json upload/publish went
+        ;    unnoticed while the png still landed on the host).
+        exitCode := RunWait('scp -q "' localPng '" "' FM_USER '@' FM_HOST ':' remoteTmpPng '"',, "Hide")
+        if (exitCode != 0) {
+            TrayTip("Captain input", "Screenshot capture failed: png upload failed (scp exit " exitCode ")", 3)
+            return
+        }
+        exitCode := RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpPng '" "' remoteFinalPng '"',, "Hide")
+        if (exitCode != 0) {
+            TrayTip("Captain input", "Screenshot capture failed: png publish failed (ssh mv exit " exitCode ")", 3)
+            return
+        }
+
+        ; 2. Write the paired envelope last, the same atomic way - the
+        ;    envelope landing under its final name is the "this drop is
+        ;    complete" signal the watch script waits for.
+        droppedAt := FormatTime(, "yyyy-MM-ddTHH:mm:ssZ")
+        caption := ""  ; optionally prompt the captain for a one-line caption here
+        envelope := '{"id":"' id '","type":"screenshot","path":"' remoteFinalPng '","caption":"' caption '","dropped_at":"' droppedAt '"}'
+        localJson := tempDir "\" id ".json"
+        FileAppend(envelope, localJson, "UTF-8")
+
+        exitCode := RunWait('scp -q "' localJson '" "' FM_USER '@' FM_HOST ':' remoteTmpJson '"',, "Hide")
+        if (exitCode != 0) {
+            TrayTip("Captain input", "Screenshot capture failed: json upload failed (scp exit " exitCode ")", 3)
+            return
+        }
+        exitCode := RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpJson '" "' remoteFinalJson '"',, "Hide")
+        if (exitCode != 0) {
+            TrayTip("Captain input", "Screenshot capture failed: json publish failed (ssh mv exit " exitCode ")", 3)
+            return
+        }
+
+        FileDelete(localPng)
+        FileDelete(localJson)
+
+        TrayTip("Captain input", "Screenshot sent to firstmate (" id ")", 1)
+    } finally {
+        g_CaptureInProgress := false
     }
-    exitCode := RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpPng '" "' remoteFinalPng '"',, "Hide")
-    if (exitCode != 0) {
-        TrayTip("Captain input", "Screenshot capture failed: png publish failed (ssh mv exit " exitCode ")", 3)
-        return
-    }
-
-    ; 2. Write the paired envelope last, the same atomic way - the envelope
-    ;    landing under its final name is the "this drop is complete" signal
-    ;    the watch script waits for.
-    droppedAt := FormatTime(, "yyyy-MM-ddTHH:mm:ssZ")
-    caption := ""  ; optionally prompt the captain for a one-line caption here
-    envelope := '{"id":"' id '","type":"screenshot","path":"' remoteFinalPng '","caption":"' caption '","dropped_at":"' droppedAt '"}'
-    localJson := tempDir "\" id ".json"
-    FileAppend(envelope, localJson, "UTF-8")
-
-    exitCode := RunWait('scp -q "' localJson '" "' FM_USER '@' FM_HOST ':' remoteTmpJson '"',, "Hide")
-    if (exitCode != 0) {
-        TrayTip("Captain input", "Screenshot capture failed: json upload failed (scp exit " exitCode ")", 3)
-        return
-    }
-    exitCode := RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpJson '" "' remoteFinalJson '"',, "Hide")
-    if (exitCode != 0) {
-        TrayTip("Captain input", "Screenshot capture failed: json publish failed (ssh mv exit " exitCode ")", 3)
-        return
-    }
-
-    FileDelete(localPng)
-    FileDelete(localJson)
-
-    TrayTip("Captain input", "Screenshot sent to firstmate (" id ")", 1)
 }
 
 ; Minimal clipboard-image-to-PNG-file helper: reads the clipboard's raw DIB
