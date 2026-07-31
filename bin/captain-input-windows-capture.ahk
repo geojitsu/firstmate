@@ -92,20 +92,40 @@ CaptainInputCapture(DataType) {
 SaveClipboardImageAsPng(destPath) {
     if !DllCall("gdiplus\GdiplusStartup", "ptr*", &pToken := 0, "ptr", Buffer(24, 0), "ptr", 0)
         return false
+    clipboardOpen := false
     try {
+        ; GetClipboardData requires the clipboard to be open first, or it
+        ; always returns null - open it here rather than relying on a caller.
+        ; Windows synthesizes CF_BITMAP from CF_DIB/CF_DIBV5 automatically
+        ; once the clipboard is open, so requesting CF_BITMAP alone also
+        ; covers tools (e.g. Snip & Sketch) that only populate CF_DIB.
+        clipboardOpen := DllCall("OpenClipboard", "ptr", 0)
+        if !clipboardOpen {
+            TrayTip("Captain input", "Screenshot capture failed: could not open clipboard", 3)
+            return false
+        }
         hBitmap := DllCall("GetClipboardData", "uint", 2, "ptr")  ; CF_BITMAP
-        if !hBitmap
+        if !hBitmap {
+            TrayTip("Captain input", "Screenshot capture failed: no bitmap on clipboard", 3)
             return false
+        }
         DllCall("gdiplus\GdipCreateBitmapFromHBITMAP", "ptr", hBitmap, "ptr", 0, "ptr*", &pBitmap := 0)
-        if !pBitmap
+        if !pBitmap {
+            TrayTip("Captain input", "Screenshot capture failed: could not convert clipboard bitmap", 3)
             return false
+        }
         ; PNG encoder CLSID: {557cf406-1a04-11d3-9a73-0000f81ef32e}
         clsid := Buffer(16, 0)
         DllCall("ole32\CLSIDFromString", "wstr", "{557cf406-1a04-11d3-9a73-0000f81ef32e}", "ptr", clsid)
         DllCall("gdiplus\GdipSaveImageToFile", "ptr", pBitmap, "wstr", destPath, "ptr", clsid, "ptr", 0)
         DllCall("gdiplus\GdipDisposeImage", "ptr", pBitmap)
-        return FileExist(destPath) ? true : false
+        saved := FileExist(destPath) ? true : false
+        if !saved
+            TrayTip("Captain input", "Screenshot capture failed: PNG file was not written", 3)
+        return saved
     } finally {
+        if clipboardOpen
+            DllCall("CloseClipboard")
         DllCall("gdiplus\GdiplusShutdown", "ptr", pToken)
     }
 }
