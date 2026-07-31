@@ -100,8 +100,16 @@ CaptainInputCapture(DataType) {
 ; helpers - prefer it, and fall back to the CF_BITMAP path only if CF_DIB
 ; is not on the clipboard at all.
 SaveClipboardImageAsPng(destPath) {
-    if !DllCall("gdiplus\GdiplusStartup", "ptr*", &pToken := 0, "ptr", Buffer(24, 0), "ptr", 0)
+    ; GdiplusStartup returns a GpStatus (0 = Ok), not a boolean, and its
+    ; GdiplusStartupInput struct requires GdiplusVersion (the first field) set
+    ; to 1 - an all-zero input buffer is itself a likely startup failure.
+    gdiInput := Buffer(24, 0)
+    NumPut("uint", 1, gdiInput, 0)  ; GdiplusVersion
+    gdiStartupStatus := DllCall("gdiplus\GdiplusStartup", "ptr*", &pToken := 0, "ptr", gdiInput, "ptr", 0)
+    if (gdiStartupStatus != 0) {
+        TrayTip("Captain input", "Screenshot capture failed: GdiplusStartup status " gdiStartupStatus, 3)
         return false
+    }
     clipboardOpen := false
     try {
         ; GetClipboardData requires the clipboard to be open first, or it
