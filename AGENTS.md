@@ -73,6 +73,8 @@ config/herdr-presentation-spaces  optional presence flag for Herdr's default-off
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
+config/captain-input  presence flag opting this home into the async SSH-delivered screenshot-drop channel; LOCAL, gitignored; written once by bin/fm-captain-input-enable.sh; see docs/configuration.md "Captain input"
+config/captain-input.env  generated captain-input watcher cadence; LOCAL, gitignored; absent when config/x-mode.env already covers this home's fast cadence; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
@@ -92,6 +94,8 @@ state/               volatile runtime signals; gitignored
   <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority; see docs/herdr-backend.md "Optional presentation spaces"
   <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified X shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
+  captain-drop/      mode-0700 watched directory for the async SSH-delivered captain-input channel; conditional, absent unless bin/fm-captain-input-enable.sh has run; see docs/configuration.md "Captain input"
+  captain-drop/.consumed/  mode-0700 processed-envelope archive under captain-drop/, preventing a re-scanned drop from enqueueing twice
   <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
   <id>.pr-poll-registration  private transactional provenance record binding the task, canonical metadata identity, sidecar, and static poll publication
   <id>.pr-poll-retirement  private identity-bound crash-recovery receipt for one exact validated merged result; removed after its poll artifacts retire
