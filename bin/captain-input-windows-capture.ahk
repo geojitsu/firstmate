@@ -37,6 +37,33 @@ FM_REMOTE_DROP_DIR := "REPLACE_ME_/absolute/path/to/firstmate/state/captain-drop
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
+; GDI+ is started once for the whole process and shut down once on exit -
+; the documented correct usage pattern is to bracket Startup/Shutdown around
+; the process's entire GDI+ usage, not each operation. This script used to
+; call GdiplusStartup/GdiplusShutdown on every SaveClipboardImageAsPng()
+; invocation, and Windows/Snip & Sketch fires OnClipboardChange TWICE per
+; screenshot (an intermediate clipboard write before the final one) - so
+; that ran rapid repeated Startup/Shutdown cycles on the same process, which
+; is not a safe GDI+ usage pattern and was crashing GdiplusShutdown itself
+; (0xc0000005 access violation) on the captain's machine.
+g_GdiPlusToken := 0
+gdiplusStartupInput := Buffer(24, 0)
+NumPut("uint", 1, gdiplusStartupInput, 0)  ; GdiplusVersion
+gdiplusStartupStatus := DllCall("gdiplus\GdiplusStartup", "ptr*", &g_GdiPlusToken := 0, "ptr", gdiplusStartupInput, "ptr", 0)
+if (gdiplusStartupStatus != 0) {
+    TrayTip("Captain input", "GDI+ failed to start (status " gdiplusStartupStatus ") - screenshot capture is disabled", 3)
+    ExitApp(1)
+}
+OnExit(ShutdownGdiPlus)
+
+ShutdownGdiPlus(*) {
+    global g_GdiPlusToken
+    if g_GdiPlusToken {
+        DllCall("gdiplus\GdiplusShutdown", "ptr", g_GdiPlusToken)
+        g_GdiPlusToken := 0
+    }
+}
+
 OnClipboardChange(CaptainInputCapture)
 
 CaptainInputCapture(DataType) {
@@ -88,7 +115,9 @@ CaptainInputCapture(DataType) {
 ; Minimal clipboard-image-to-PNG-file helper: reads the clipboard's raw DIB
 ; bytes and hands them to GDI+ directly, then saves as PNG. Requires no
 ; external .ahk library beyond AHK v2's built-in GDI+ startup, kept inline
-; here so this stays a single-file script.
+; here so this stays a single-file script. Assumes GDI+ is already started
+; for the process (see the top-level GdiplusStartup call and ShutdownGdiPlus)
+; - this function must not start or shut down GDI+ itself.
 ;
 ; CF_BITMAP (format 2) is Windows-synthesized on demand from CF_DIB/CF_DIBV5
 ; and can come back as a degenerate stub in some delay-rendering or scaling
@@ -100,16 +129,6 @@ CaptainInputCapture(DataType) {
 ; helpers - prefer it, and fall back to the CF_BITMAP path only if CF_DIB
 ; is not on the clipboard at all.
 SaveClipboardImageAsPng(destPath) {
-    ; GdiplusStartup returns a GpStatus (0 = Ok), not a boolean, and its
-    ; GdiplusStartupInput struct requires GdiplusVersion (the first field) set
-    ; to 1 - an all-zero input buffer is itself a likely startup failure.
-    gdiInput := Buffer(24, 0)
-    NumPut("uint", 1, gdiInput, 0)  ; GdiplusVersion
-    gdiStartupStatus := DllCall("gdiplus\GdiplusStartup", "ptr*", &pToken := 0, "ptr", gdiInput, "ptr", 0)
-    if (gdiStartupStatus != 0) {
-        TrayTip("Captain input", "Screenshot capture failed: GdiplusStartup status " gdiStartupStatus, 3)
-        return false
-    }
     clipboardOpen := false
     try {
         ; GetClipboardData requires the clipboard to be open first, or it
@@ -178,6 +197,5 @@ SaveClipboardImageAsPng(destPath) {
     } finally {
         if clipboardOpen
             DllCall("CloseClipboard")
-        DllCall("gdiplus\GdiplusShutdown", "ptr", pToken)
     }
 }
