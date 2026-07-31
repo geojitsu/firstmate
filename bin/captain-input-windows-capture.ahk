@@ -129,12 +129,19 @@ CaptainInputCapture(DataType) {
         ;    silently continuing past a failed upload step (a prior
         ;    version did this, and a failed json upload/publish went
         ;    unnoticed while the png still landed on the host).
+        ;    The two ssh (not scp) calls pass -n -T: launched hidden with no
+        ;    console, ssh can otherwise block trying to read stdin or
+        ;    negotiate a pseudo-terminal that will never come - the actual
+        ;    cause of every "works once, then hangs with no TrayTip" report
+        ;    in this file's history. -n disables stdin, -T disables pty
+        ;    allocation, both required only for the interactive `ssh`
+        ;    invocations, not for `scp`.
         exitCode := RunWait('scp -q "' localPng '" "' FM_USER '@' FM_HOST ':' remoteTmpPng '"',, "Hide")
         if (exitCode != 0) {
             TrayTip("Captain input", "Screenshot capture failed: png upload failed (scp exit " exitCode ")", 3)
             return
         }
-        exitCode := RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpPng '" "' remoteFinalPng '"',, "Hide")
+        exitCode := RunWait('ssh -n -T "' FM_USER '@' FM_HOST '" mv "' remoteTmpPng '" "' remoteFinalPng '"',, "Hide")
         if (exitCode != 0) {
             TrayTip("Captain input", "Screenshot capture failed: png publish failed (ssh mv exit " exitCode ")", 3)
             return
@@ -154,7 +161,7 @@ CaptainInputCapture(DataType) {
             TrayTip("Captain input", "Screenshot capture failed: json upload failed (scp exit " exitCode ")", 3)
             return
         }
-        exitCode := RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpJson '" "' remoteFinalJson '"',, "Hide")
+        exitCode := RunWait('ssh -n -T "' FM_USER '@' FM_HOST '" mv "' remoteTmpJson '" "' remoteFinalJson '"',, "Hide")
         if (exitCode != 0) {
             TrayTip("Captain input", "Screenshot capture failed: json publish failed (ssh mv exit " exitCode ")", 3)
             return
@@ -164,6 +171,8 @@ CaptainInputCapture(DataType) {
         FileDelete(localJson)
 
         TrayTip("Captain input", "Screenshot sent to firstmate (" id ")", 1)
+    } catch as err {
+        TrayTip("Captain input", "Screenshot capture crashed: " err.Message " @ " err.File ":" err.Line, 3)
     } finally {
         g_CaptureInProgress := false
     }

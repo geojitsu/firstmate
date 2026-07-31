@@ -3,6 +3,10 @@ title: Captain-input capture hung silently after Critical was added for reentran
 description: Critical, added to block a reentrant OnClipboardChange callback, was then implicated in a total hang with no TrayTip at all; removed because the g_CaptureInProgress flag already fully solves the reentrancy problem on its own.
 ---
 
+**Correction**: removing `Critical` here was a reasonable, evidence-based step (see Root cause below) but did not fix the hang - the script still hung after this change.
+The actual cause was simpler and entirely unrelated to `Critical`: the `ssh mv` calls were missing `-n -T`, documented in `2026-07-31-captain-input-ssh-hang-missing-nt-flags.md`.
+`Critical`'s removal is still correct on its own merits (it was genuinely redundant given `g_CaptureInProgress`), just not the fix for this particular symptom.
+
 ## Symptom
 
 After the reentrancy fix (see `2026-07-31-captain-input-clipboard-callback-reentrancy.md`) and the `GdiplusShutdown` removal (see `2026-07-31-captain-input-gdiplus-shutdown-removed.md`), the captain reported no `TrayTip` appearing at all after the one screenshot that had worked, and consecutive screenshots stopped triggering entirely.
