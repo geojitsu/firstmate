@@ -291,7 +291,8 @@ For direct client invocations, environment values override `.env`; bootstrap act
 The locked session-start bootstrap step turns the token into local generated state.
 It writes `state/x-watch.check.sh`, a byte-static identity shim for `bin/fm-x-poll.sh`, and `config/x-mode.env`, which exports `FM_CHECK_INTERVAL=30` for watcher processes in that home.
 The watcher accepts the shim only when its bytes match the expected generated content, then invokes the trusted repository poll script directly instead of executing state-file source.
-This section is the single owner of the X-mode cadence contract: an X instance polls every 30 seconds instead of the default 300, only an X instance speeds up because a non-X home has no `config/x-mode.env`, and the session-start supervision operating block includes the cadence instruction when that file exists.
+This section is the single owner of the X-mode cadence contract: an X instance polls every 30 seconds instead of the default 300, a home with neither `config/x-mode.env` nor another opt-in channel's own cadence env file keeps the default, and the session-start supervision operating block includes the cadence instruction when that file exists.
+Captain input is a separate opt-in channel with its own faster cadence floor and its own generated env file; it does not read or write `config/x-mode.env`, though its enable script reuses that file's `FM_CHECK_INTERVAL` in place of writing a second one when X mode is already on for the home (see "Captain input" below).
 The active primary-harness supervision protocol owns how that sourced cadence reaches the watcher process.
 Because `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start, a cadence transition - opt-in while a watcher is already running, or opt-out - is applied by restarting the home-scoped watcher through the emitted harness protocol; bootstrap deliberately never restarts the watcher itself.
 While away mode is active the daemon owns the watcher and its default cadence applies; away-mode X cadence is a deferred follow-up.
@@ -350,6 +351,51 @@ When an image is attached, the dry-run record uses compact `{media_type, bytes, 
 In dry-run, `fm-x-dismiss.sh` records `{request_id, endpoint:"dismiss"}` to the same outbox path, prints a `DRY RUN` summary, echoes the `request_id`, and exits 0.
 The live answer and follow-up bodies intentionally stay the same shape, including optional `image`; the relay distinguishes them by endpoint, and dismiss stays `{request_id}`.
 These paths need `jq` to build the JSON payload, but they run before token and network checks, so they need neither `FMX_PAIRING_TOKEN` nor `curl`.
+
+## Captain input (config/captain-input)
+
+Captain input is an async, harness-portable channel for the captain to drop a file from any machine over SSH and have the primary firstmate session notice it on its normal wake-queue cycle, without a live pane injection and without an MCP server or tunnel.
+Phase 1 covers screenshots only; audio, transcription, and away-mode-specific interaction are later phases.
+It is off unless `config/captain-input` exists in the home; that presence flag, plus a registered check script, are the complete opt-in - there is no separate token.
+Unlike X mode's public-mention relay, the captain is already an authenticated SSH principal on the host before any of this runs, so SSH auth to the account firstmate runs as is the complete authorization boundary: `state/captain-drop/` and `state/captain-drop/.consumed/` are created mode `0700`, owned by that account.
+On a host where the captain's SSH login is a *different* Unix account than the one running firstmate, file ownership alone stops being sufficient and the watch script's directory-mode check should be tightened accordingly - not assumed safe.
+
+`bin/fm-captain-input-enable.sh` is a one-time, idempotent setup step firstmate runs once per home to turn the channel on (it is not part of bootstrap's continuous convergence sweep, unlike X mode).
+It writes `config/captain-input`; creates `state/captain-drop/` and `state/captain-drop/.consumed/` at mode `0700`; writes the fast-cadence env file the watcher sources at process start (reusing `config/x-mode.env`'s `FM_CHECK_INTERVAL` when X mode is already on for this home, otherwise writing `config/captain-input.env` with `FM_CHECK_INTERVAL=15`); and writes `state/captain-input.check.sh` - a small trampoline that `exec`s the trusted repository script `bin/fm-captain-input-watch.sh` - then binds that trampoline's bytes with `bin/fm-check-register.sh captain-input` so the watcher will run it.
+Running the enable script again is safe: each artifact is refreshed or left as-is, and the check script is re-registered.
+
+**Cadence floor:** `bin/fm-watch.sh`'s `*.check.sh` sweep only runs once per main-loop pass, gated on `age_of "$STATE/.last-check" >= $CHECK_INTERVAL` *inside* the loop whose own cadence is `POLL=${FM_POLL:-15}` (15s default).
+Setting `FM_CHECK_INTERVAL` below `POLL` does not achieve sub-`POLL` cadence - it only guarantees the check fires on every pass, still bounded at ~15s.
+`config/captain-input.env` sets `FM_CHECK_INTERVAL=15`, matching that floor exactly.
+As with X mode, this cadence transition needs the home-scoped watcher restarted through the active harness protocol; the enable script deliberately never restarts it.
+The cadence runs regardless of captain presence: it is not gated on away mode (`state/.afk`).
+
+**Envelope schema**, one JSON file per drop at `state/captain-drop/<id>.json`, with its raw payload alongside at `state/captain-drop/<id>.<ext>`:
+
+```json
+{"id": "<id>", "type": "screenshot", "path": "state/captain-drop/<id>.png", "caption": "<optional>", "dropped_at": "<ISO 8601>"}
+```
+
+`type` is `"screenshot"` for Phase 1; the field exists so a later phase can add a new type (e.g. `"audio"`) without a breaking schema change.
+`id` must equal the envelope's own filename base, and `path` must resolve to a direct, non-traversing child of `state/captain-drop/` named `<id>.<ext>` - `bin/fm-captain-input-watch.sh` rejects anything else rather than trusting the field past that shape.
+
+**Wire delivery** is plain `scp`/`ssh`, not a new protocol: upload the payload to a temp name under `state/captain-drop/`, then `ssh host mv` it to its final name to publish atomically, then write the envelope the same way, last (its arrival under the final name is the "this drop is complete" signal).
+For example, from any machine with SSH access to the host:
+
+```sh
+scp shot.png host:state/captain-drop/.tmp-<id>.png && ssh host mv state/captain-drop/.tmp-<id>.png state/captain-drop/<id>.png
+# then the envelope, the same atomic way, written last
+```
+
+`bin/captain-input-windows-capture.ahk` is a reference AutoHotkey v2 script the captain installs and runs on their own Windows machine to automate that wire sequence - firstmate never runs or controls it.
+It listens for `OnClipboardChange` (Windows' clipboard-change-listener API) rather than a hotkey rebind, so it fires for any tool that lands an image on the clipboard (Snip & Sketch, PrtScn-to-clipboard, third-party tools) with nothing to press.
+`Win+PrtScn` specifically bypasses the clipboard and writes straight to a `Pictures\Screenshots` file, so a clipboard listener never sees captures taken that way; if that is the captain's capture habit, the trigger needs to become a folder watch on that path instead - the upload/envelope body is unchanged either way.
+Fill in the host, remote drop directory, and SSH user placeholders at the top of the script before using it.
+
+`bin/fm-captain-input-watch.sh` is the registered check body.
+On each poll it lists `state/captain-drop/*.json`, skips any envelope or payload file younger than a short quiet period (still-growing / mid-transfer, using the same age-of-mtime check the rest of the watcher already uses), and for each complete envelope enqueues a wake-queue record keyed `captain-input:<id>` - a distinct key per drop, so multiple simultaneous drops each survive the queue's per-key drain dedup rather than collapsing into one - then moves the envelope and its payload into `state/captain-drop/.consumed/` so a later re-scan never reports the same drop twice.
+It also prints one summary line when at least one envelope was reported, which is what drives the watcher's own generic wake-and-exit for that check (the same "print one line only when firstmate should wake" contract every registered check follows, AGENTS.md section 7).
+From there this is not a new lifecycle kind: the primary drains the wake queue on its normal wake-handling turn (AGENTS.md section 8, "For `check:`, act on the named poll result"), reads the referenced file like it would read any other referenced file, and treats the delivered content like an ordinary captain message - it is not authority for a merge or a destructive action any more than a typed chat message would be.
 
 ## Environment variables
 

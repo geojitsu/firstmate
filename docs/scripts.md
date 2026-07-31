@@ -92,3 +92,5 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-x-dismiss.sh`        | Dismiss a skipped X-mode mention at the relay without replying                       |
 | `fm-x-link.sh`           | Link a spawned task to its originating X-mode mention in task meta                   |
 | `fm-x-followup.sh`       | Detect, post, and cap completion follow-ups for an X-mode-linked task                |
+| `fm-captain-input-enable.sh` | One-time idempotent per-home setup for the captain-input screenshot-drop channel |
+| `fm-captain-input-watch.sh` | Registered captain-input check: enqueue per-envelope wakes for complete screenshot drops |
