@@ -85,10 +85,20 @@ CaptainInputCapture(DataType) {
     TrayTip("Captain input", "Screenshot sent to firstmate (" id ")", 1)
 }
 
-; Minimal clipboard-image-to-PNG-file helper: draws the clipboard bitmap into
-; a temporary GUI Picture control, then lets GDI+ (via a Gdip_ token, loaded
-; on demand) save it as PNG. Requires no external .ahk library beyond AHK v2's
-; built-in GDI+ startup, kept inline here so this stays a single-file script.
+; Minimal clipboard-image-to-PNG-file helper: reads the clipboard's raw DIB
+; bytes and hands them to GDI+ directly, then saves as PNG. Requires no
+; external .ahk library beyond AHK v2's built-in GDI+ startup, kept inline
+; here so this stays a single-file script.
+;
+; CF_BITMAP (format 2) is Windows-synthesized on demand from CF_DIB/CF_DIBV5
+; and can come back as a degenerate stub in some delay-rendering or scaling
+; scenarios even when the handle itself is non-null, silently failing
+; GdipCreateBitmapFromHBITMAP - this is what broke on the captain's machine.
+; CF_DIB (format 8) is the actual bytes (BITMAPINFOHEADER + optional color
+; table + pixel bits) and converts reliably via GdipCreateBitmapFromGdiDib,
+; the technique used by AHK's community Gdip_All/WinClip clipboard-to-image
+; helpers - prefer it, and fall back to the CF_BITMAP path only if CF_DIB
+; is not on the clipboard at all.
 SaveClipboardImageAsPng(destPath) {
     if !DllCall("gdiplus\GdiplusStartup", "ptr*", &pToken := 0, "ptr", Buffer(24, 0), "ptr", 0)
         return false
@@ -96,32 +106,66 @@ SaveClipboardImageAsPng(destPath) {
     try {
         ; GetClipboardData requires the clipboard to be open first, or it
         ; always returns null - open it here rather than relying on a caller.
-        ; Windows synthesizes CF_BITMAP from CF_DIB/CF_DIBV5 automatically
-        ; once the clipboard is open, so requesting CF_BITMAP alone also
-        ; covers tools (e.g. Snip & Sketch) that only populate CF_DIB.
         clipboardOpen := DllCall("OpenClipboard", "ptr", 0)
         if !clipboardOpen {
-            TrayTip("Captain input", "Screenshot capture failed: could not open clipboard", 3)
+            TrayTip("Captain input", "Screenshot capture failed: could not open clipboard (error " A_LastError ")", 3)
             return false
         }
-        hBitmap := DllCall("GetClipboardData", "uint", 2, "ptr")  ; CF_BITMAP
-        if !hBitmap {
-            TrayTip("Captain input", "Screenshot capture failed: no bitmap on clipboard", 3)
-            return false
+
+        pBitmap := 0
+        if DllCall("IsClipboardFormatAvailable", "uint", 8) {  ; CF_DIB
+            hGlobal := DllCall("GetClipboardData", "uint", 8, "ptr")
+            if !hGlobal {
+                TrayTip("Captain input", "Screenshot capture failed: CF_DIB present but GetClipboardData returned null (error " A_LastError ")", 3)
+            } else {
+                pDIB := DllCall("GlobalLock", "ptr", hGlobal, "ptr")
+                if !pDIB {
+                    TrayTip("Captain input", "Screenshot capture failed: could not lock clipboard DIB (error " A_LastError ")", 3)
+                } else {
+                    ; BITMAPINFOHEADER: biSize@0 (UInt), biBitCount@14 (UShort),
+                    ; biClrUsed@32 (UInt). Pixel bits start after the header
+                    ; plus any color table (biClrUsed entries, or 2^biBitCount
+                    ; when biClrUsed is 0 and the format is <=8bpp indexed).
+                    biSize := NumGet(pDIB, 0, "uint")
+                    biBitCount := NumGet(pDIB, 14, "ushort")
+                    biClrUsed := NumGet(pDIB, 32, "uint")
+                    colorTableEntries := biClrUsed ? biClrUsed : (biBitCount <= 8 ? (1 << biBitCount) : 0)
+                    pPixels := pDIB + biSize + (colorTableEntries * 4)
+                    dibStatus := DllCall("gdiplus\GdipCreateBitmapFromGdiDib", "ptr", pDIB, "ptr", pPixels, "ptr*", &pBitmap := 0)
+                    DllCall("GlobalUnlock", "ptr", hGlobal)
+                    if (dibStatus != 0) || !pBitmap {
+                        TrayTip("Captain input", "Screenshot capture failed: GdipCreateBitmapFromGdiDib status " dibStatus, 3)
+                        pBitmap := 0
+                    }
+                }
+            }
         }
-        DllCall("gdiplus\GdipCreateBitmapFromHBITMAP", "ptr", hBitmap, "ptr", 0, "ptr*", &pBitmap := 0)
+
         if !pBitmap {
-            TrayTip("Captain input", "Screenshot capture failed: could not convert clipboard bitmap", 3)
-            return false
+            if !DllCall("IsClipboardFormatAvailable", "uint", 2) {  ; CF_BITMAP
+                TrayTip("Captain input", "Screenshot capture failed: no bitmap on clipboard (neither CF_DIB nor CF_BITMAP available)", 3)
+                return false
+            }
+            hBitmap := DllCall("GetClipboardData", "uint", 2, "ptr")
+            if !hBitmap {
+                TrayTip("Captain input", "Screenshot capture failed: CF_BITMAP present but GetClipboardData returned null (error " A_LastError ")", 3)
+                return false
+            }
+            hbitmapStatus := DllCall("gdiplus\GdipCreateBitmapFromHBITMAP", "ptr", hBitmap, "ptr", 0, "ptr*", &pBitmap := 0)
+            if (hbitmapStatus != 0) || !pBitmap {
+                TrayTip("Captain input", "Screenshot capture failed: could not convert clipboard bitmap (GDI+ status " hbitmapStatus ")", 3)
+                return false
+            }
         }
+
         ; PNG encoder CLSID: {557cf406-1a04-11d3-9a73-0000f81ef32e}
         clsid := Buffer(16, 0)
         DllCall("ole32\CLSIDFromString", "wstr", "{557cf406-1a04-11d3-9a73-0000f81ef32e}", "ptr", clsid)
-        DllCall("gdiplus\GdipSaveImageToFile", "ptr", pBitmap, "wstr", destPath, "ptr", clsid, "ptr", 0)
+        saveStatus := DllCall("gdiplus\GdipSaveImageToFile", "ptr", pBitmap, "wstr", destPath, "ptr", clsid, "ptr", 0)
         DllCall("gdiplus\GdipDisposeImage", "ptr", pBitmap)
         saved := FileExist(destPath) ? true : false
         if !saved
-            TrayTip("Captain input", "Screenshot capture failed: PNG file was not written", 3)
+            TrayTip("Captain input", "Screenshot capture failed: PNG file was not written (GDI+ save status " saveStatus ")", 3)
         return saved
     } finally {
         if clipboardOpen
