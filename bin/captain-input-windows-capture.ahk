@@ -37,31 +37,28 @@ FM_REMOTE_DROP_DIR := "REPLACE_ME_/absolute/path/to/firstmate/state/captain-drop
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-; GDI+ is started once for the whole process and shut down once on exit -
-; the documented correct usage pattern is to bracket Startup/Shutdown around
-; the process's entire GDI+ usage, not each operation. This script used to
-; call GdiplusStartup/GdiplusShutdown on every SaveClipboardImageAsPng()
-; invocation, and Windows/Snip & Sketch fires OnClipboardChange TWICE per
-; screenshot (an intermediate clipboard write before the final one) - so
-; that ran rapid repeated Startup/Shutdown cycles on the same process, which
-; is not a safe GDI+ usage pattern and was crashing GdiplusShutdown itself
-; (0xc0000005 access violation) on the captain's machine.
-g_GdiPlusToken := 0
+; GDI+ is started once for the whole process - the documented correct usage
+; pattern is to bracket Startup around the process's entire GDI+ usage, not
+; each operation. This script used to call GdiplusStartup/GdiplusShutdown on
+; every SaveClipboardImageAsPng() invocation, and Windows/Snip & Sketch fires
+; OnClipboardChange TWICE per screenshot (an intermediate clipboard write
+; before the final one) - so that ran rapid repeated Startup/Shutdown cycles
+; on the same process, which is not a safe GDI+ usage pattern.
+;
+; There is deliberately no explicit GdiplusShutdown call, even at exit: this
+; script kept crashing (0xc0000005) inside an OnExit-registered
+; GdiplusShutdown call even after the reentrancy fix eliminated concurrent
+; captures, and Windows fully reclaims all GDI+ (and other process) resources
+; on process termination regardless of whether GdiplusShutdown was called -
+; standard, documented OS behavior, not a leak risk for a script that is only
+; ever manually closed or reloaded by the captain. Skipping the call entirely
+; is simpler and more robust than continuing to chase the exact corruption.
 gdiplusStartupInput := Buffer(24, 0)
 NumPut("uint", 1, gdiplusStartupInput, 0)  ; GdiplusVersion
-gdiplusStartupStatus := DllCall("gdiplus\GdiplusStartup", "ptr*", &g_GdiPlusToken := 0, "ptr", gdiplusStartupInput, "ptr", 0)
+gdiplusStartupStatus := DllCall("gdiplus\GdiplusStartup", "ptr*", &gdiplusToken := 0, "ptr", gdiplusStartupInput, "ptr", 0)
 if (gdiplusStartupStatus != 0) {
     TrayTip("Captain input", "GDI+ failed to start (status " gdiplusStartupStatus ") - screenshot capture is disabled", 3)
     ExitApp(1)
-}
-OnExit(ShutdownGdiPlus)
-
-ShutdownGdiPlus(*) {
-    global g_GdiPlusToken
-    if g_GdiPlusToken {
-        DllCall("gdiplus\GdiplusShutdown", "ptr", g_GdiPlusToken)
-        g_GdiPlusToken := 0
-    }
 }
 
 ; Reentrancy guard for CaptainInputCapture (see the function's own header
@@ -82,14 +79,21 @@ CaptainInputCapture(DataType) {
     ; the corrupted global state and crashes seen in earlier rounds (up to
     ; and including a crash inside ShutdownGdiPlus at script exit, long
     ; after the capture that corrupted things had returned).
-    ; AHK v2's own OnClipboardChange docs name this exact hazard and
-    ; recommend Critical: "If the clipboard changes while a callback is
-    ; already running, that notification event is lost. If this is
-    ; undesirable, use Critical" - Critical makes AHK buffer/defer a second
-    ; notification instead of dispatching it concurrently. g_CaptureInProgress
-    ; is a second, explicit guard in case of any interruption Critical alone
-    ; does not cover.
-    Critical
+    ;
+    ; g_CaptureInProgress alone is a complete guard against this: any
+    ; reentrant call hits the check below and returns immediately, before
+    ; touching any clipboard or GDI+ state, regardless of AHK's thread
+    ; scheduling. An earlier version of this fix also added Critical, on
+    ; AHK v2's own OnClipboardChange documentation's recommendation for this
+    ; exact hazard - but Critical was then implicated in a real hang (no
+    ; TrayTip at all, all captures after the first going silently dead),
+    ; and AHK's own docs on Critical/message-check-interval describe it
+    ; changing exactly when buffered events are allowed to start new
+    ; threads, which is squarely the kind of interaction the community
+    ; separately documents producing deadlocks with waiting functions like
+    ; RunWait. Since g_CaptureInProgress does not depend on any of that
+    ; scheduling behavior to be correct, Critical was pure added risk on top
+    ; of an already-sufficient fix, so it was removed.
     global g_CaptureInProgress
     if g_CaptureInProgress
         return
@@ -169,8 +173,8 @@ CaptainInputCapture(DataType) {
 ; bytes and hands them to GDI+ directly, then saves as PNG. Requires no
 ; external .ahk library beyond AHK v2's built-in GDI+ startup, kept inline
 ; here so this stays a single-file script. Assumes GDI+ is already started
-; for the process (see the top-level GdiplusStartup call and ShutdownGdiPlus)
-; - this function must not start or shut down GDI+ itself.
+; for the process (see the top-level GdiplusStartup call) - this function
+; must not start or shut down GDI+ itself.
 ;
 ; CF_BITMAP (format 2) is Windows-synthesized on demand from CF_DIB/CF_DIBV5
 ; and can come back as a degenerate stub in some delay-rendering or scaling
