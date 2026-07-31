@@ -91,8 +91,21 @@ CaptainInputCapture(DataType) {
 
     ; 1. Upload the payload to a temp name, then atomically publish it with a
     ;    remote rename - never let the watcher see a partially-written file.
-    RunWait('scp -q "' localPng '" "' FM_USER '@' FM_HOST ':' remoteTmpPng '"',, "Hide")
-    RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpPng '" "' remoteFinalPng '"',, "Hide")
+    ;    RunWait returns the child process's exit code directly in AHK v2 -
+    ;    check each of the 4 scp/ssh calls below and stop on the first
+    ;    failure, rather than silently continuing past a failed upload step
+    ;    (a prior version did this, and a failed json upload/publish went
+    ;    unnoticed while the png still landed on the host).
+    exitCode := RunWait('scp -q "' localPng '" "' FM_USER '@' FM_HOST ':' remoteTmpPng '"',, "Hide")
+    if (exitCode != 0) {
+        TrayTip("Captain input", "Screenshot capture failed: png upload failed (scp exit " exitCode ")", 3)
+        return
+    }
+    exitCode := RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpPng '" "' remoteFinalPng '"',, "Hide")
+    if (exitCode != 0) {
+        TrayTip("Captain input", "Screenshot capture failed: png publish failed (ssh mv exit " exitCode ")", 3)
+        return
+    }
 
     ; 2. Write the paired envelope last, the same atomic way - the envelope
     ;    landing under its final name is the "this drop is complete" signal
@@ -103,8 +116,16 @@ CaptainInputCapture(DataType) {
     localJson := tempDir "\" id ".json"
     FileAppend(envelope, localJson, "UTF-8")
 
-    RunWait('scp -q "' localJson '" "' FM_USER '@' FM_HOST ':' remoteTmpJson '"',, "Hide")
-    RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpJson '" "' remoteFinalJson '"',, "Hide")
+    exitCode := RunWait('scp -q "' localJson '" "' FM_USER '@' FM_HOST ':' remoteTmpJson '"',, "Hide")
+    if (exitCode != 0) {
+        TrayTip("Captain input", "Screenshot capture failed: json upload failed (scp exit " exitCode ")", 3)
+        return
+    }
+    exitCode := RunWait('ssh "' FM_USER '@' FM_HOST '" mv "' remoteTmpJson '" "' remoteFinalJson '"',, "Hide")
+    if (exitCode != 0) {
+        TrayTip("Captain input", "Screenshot capture failed: json publish failed (ssh mv exit " exitCode ")", 3)
+        return
+    }
 
     FileDelete(localPng)
     FileDelete(localJson)
