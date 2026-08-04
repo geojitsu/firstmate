@@ -85,6 +85,15 @@ Stalled escalation delivery writes `state/.subsuper-inject-wedged` and attempts 
 On an unmarked return, `bin/fm-afk-return.sh` owns ordered shutdown, durable catch-up evidence, and the fail-closed gate that keeps ordinary work behind every live firstmate-actionable blocker.
 `fm-send.sh` selects a pre-Enter popup-settle for slash commands and for codex `$...` skill invocations using metadata-routed target `harness=` values, then adds its own `FM_SEND_SETTLE` pause after successful text sends so immediate peeks catch the receiving turn starting; the sub-supervisor uses only the shared submit core and does not pay that post-submit pause.
 
+## Measured context and safe compaction seams
+
+`bin/fm-context-usage.sh` reads the latest real usage record from a confidently identified current session transcript and reports the absolute token total plus a percentage when the model's documented window is known.
+It refuses to substitute a sibling session and reports an explicit unknown when the transcript, usage record, or denominator cannot be established.
+The current Claude Opus 5 configuration uses Anthropic's documented 1,000,000-token window, with an explicit local or environment override for other configurations.
+The recommended band is roughly 50-60% of the window, so Firstmate considers the lower 50% edge actionable rather than waiting for the middle of the band or a near-limit condition.
+The `context-compaction-advice` skill checks that measurement only at the existing task cleanup, fully read investigation report, durable captain decision, and abandoned-approach boundaries.
+It stays silent below the band and emits one plain suggestion at an actionable seam, while never initiating compaction or driving the firstmate session.
+
 ## Runtime session backends
 
 The runtime backend is the session-provider layer below firstmate's scripts.

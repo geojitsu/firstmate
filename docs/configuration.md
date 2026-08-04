@@ -24,6 +24,18 @@ Wake, watcher, away-mode, and X-specific state mechanics remain with their named
 It also retains the post-compaction re-grounding rule, which applies precisely when no session start ran, because only instruction already resident in the session can reach that moment.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
+## Context window measurement and compaction advice
+
+`bin/fm-context-usage.sh` reads the newest measured usage record from the current Claude or Pi session transcript and never writes session state or attempts compaction.
+Claude transcript selection requires a confident current-session binding, while `FM_CONTEXT_USAGE_TRANSCRIPT` and Pi's `PI_SESSION_FILE` provide exact bindings for their active sessions; an unproven or ambiguous selection is reported as unknown.
+The command sums `input_tokens`, `cache_read_input_tokens`, and `cache_creation_input_tokens` for Claude records, with Pi's corresponding measured fields supported when a Pi transcript is the exact current-session binding.
+The recommended compaction band is roughly 50-60% of the context window, and the boundary advice uses the lower 50% edge so it can act before retrieval and summarization quality degrade further.
+The current Anthropic model documentation identifies a 1,000,000-token context window for Claude Opus 5 and the current Claude model families Firstmate recognizes.
+That documented value is the runtime default for those model identifiers, while `FM_CONTEXT_WINDOW_TOKENS` or the first non-comment value in local gitignored `config/context-window-tokens` explicitly overrides it.
+An unrecognized model without that override reports usage without a percentage instead of guessing a denominator.
+The `context-compaction-advice` skill owns the conditional boundary checks and captain-facing wording.
+Firstmate advises the captain at safe task seams only and never triggers, injects, types, or otherwise drives compaction.
+
 ## Pi Calm preference (config/calm)
 
 The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.
