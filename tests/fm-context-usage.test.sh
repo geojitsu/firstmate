@@ -107,11 +107,20 @@ test_unknown_window_and_override() {
 }
 
 test_ambiguous_current_session_stays_unknown() {
-  local out
-  out=$(env -u FM_CONTEXT_USAGE_TRANSCRIPT -u PI_SESSION_FILE "$USAGE" --machine) \
-    || fail "ambiguous current-session command failed"
+  local home cwd driver out
+  home="$TMP_ROOT/no-transcript-home"
+  cwd="$TMP_ROOT/no-transcript-cwd"
+  mkdir -p "$home/.claude/projects" "$cwd"
+  driver="$TMP_ROOT/claude-no-transcript-driver.sh"
+  cat > "$driver" <<EOF
+#!/usr/bin/env bash
+HOME='$home' PI_SESSION_FILE='' '$USAGE' --machine
+EOF
+  chmod +x "$driver"
+  out=$(cd "$cwd" && HOME="$home" PI_SESSION_FILE='' env -u FM_CONTEXT_USAGE_TRANSCRIPT -u CLAUDE_CODE_SESSION_ID \
+    bash -c "exec -a claude bash '$driver'") || fail "ambiguous current-session command failed"
   assert_contains "$out" "status=unknown" "unbound current session was not explicit"
-  assert_contains "$out" "current-session-not-identifiable" "unbound current session reason was unclear"
+  assert_contains "$out" "ambiguous-or-missing-current-transcript" "unbound current session reason was unclear"
   pass "an unproven current-session selection stays unknown"
 }
 

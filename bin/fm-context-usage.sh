@@ -4,12 +4,12 @@
 # Reads the newest usage record from the current session transcript without
 # writing state, changing watcher behavior, or attempting compaction. A Claude
 # session is selected only when the invoking process identifies one active
-# Claude ancestor. When that ancestor's CLAUDE_CODE_SESSION_ID is set, its
-# project directory's <session-id>.jsonl is the exact transcript; otherwise
-# the directory's newest transcript is used only when newer than that
-# process started. An explicit FM_CONTEXT_USAGE_TRANSCRIPT or PI_SESSION_FILE
-# is an exact session binding; otherwise an ambiguous or unprovable selection
-# is reported unknown.
+# Claude ancestor. When the invoking process's inherited CLAUDE_CODE_SESSION_ID
+# is set, that ancestor's project directory's <session-id>.jsonl is the exact
+# transcript; otherwise the directory's newest transcript is used only when
+# newer than that process started. An explicit FM_CONTEXT_USAGE_TRANSCRIPT or
+# PI_SESSION_FILE is an exact session binding; otherwise an ambiguous or
+# unprovable selection is reported unknown.
 # Claude Opus 5 and the current Claude model families documented at
 # docs.anthropic.com use the documented 1,000,000-token window; an explicit
 # FM_CONTEXT_WINDOW_TOKENS or config/context-window-tokens override is honored.
