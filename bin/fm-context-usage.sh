@@ -4,9 +4,12 @@
 # Reads the newest usage record from the current session transcript without
 # writing state, changing watcher behavior, or attempting compaction. A Claude
 # session is selected only when the invoking process identifies one active
-# Claude ancestor and its newest transcript is newer than that process started.
-# An explicit FM_CONTEXT_USAGE_TRANSCRIPT or PI_SESSION_FILE is an exact session
-# binding; otherwise an ambiguous or unprovable selection is reported unknown.
+# Claude ancestor. When that ancestor's CLAUDE_CODE_SESSION_ID is set, its
+# project directory's <session-id>.jsonl is the exact transcript; otherwise
+# the directory's newest transcript is used only when newer than that
+# process started. An explicit FM_CONTEXT_USAGE_TRANSCRIPT or PI_SESSION_FILE
+# is an exact session binding; otherwise an ambiguous or unprovable selection
+# is reported unknown.
 # Claude Opus 5 and the current Claude model families documented at
 # docs.anthropic.com use the documented 1,000,000-token window; an explicit
 # FM_CONTEXT_WINDOW_TOKENS or config/context-window-tokens override is honored.
@@ -25,7 +28,7 @@ BAND_PERCENT=50
 MODE=human
 
 usage() {
-  sed -n '2,17{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,20{s/^# \{0,1\}//;p;}' "$0"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -94,7 +97,7 @@ ancestor_claude_pid() {
 }
 
 newest_transcript_in() {
-  local dir=$1 file mtime best='' best_mtime=-1
+  local dir=$1 file mtime best='' best_mtime=-1 tie=0
   [ -d "$dir" ] || return 1
   for file in "$dir"/*.jsonl; do
     [ -f "$file" ] || continue
@@ -103,11 +106,13 @@ newest_transcript_in() {
     if [ "$mtime" -gt "$best_mtime" ]; then
       best=$file
       best_mtime=$mtime
+      tie=0
     elif [ "$mtime" -eq "$best_mtime" ]; then
-      return 2
+      tie=1
     fi
   done
   [ -n "$best" ] || return 1
+  [ "$tie" -eq 0 ] || return 2
   printf '%s\n' "$best"
 }
 
@@ -130,27 +135,36 @@ else
     fi
     if [ -n "$CLAUDE_CWD" ]; then
       PROJECT_DIR="$HOME/.claude/projects/$(claude_project_slug "$CLAUDE_CWD")"
-      TRANSCRIPT=$(newest_transcript_in "$PROJECT_DIR" 2>/dev/null || true)
-      if [ -z "$TRANSCRIPT" ]; then
-        TRANSCRIPT_REASON=ambiguous-or-missing-current-transcript
-      fi
-      if [ -n "$TRANSCRIPT" ]; then
-        TRANSCRIPT_MTIME=$(file_mtime "$TRANSCRIPT" 2>/dev/null || printf '%s' 0)
-        PROCESS_STARTED=$(process_start_epoch "$CLAUDE_PID" 2>/dev/null || printf '%s' 0)
-        case "$TRANSCRIPT_MTIME" in
-          ''|*[!0-9]*) TRANSCRIPT_REASON=transcript-age-unverifiable; TRANSCRIPT= ;;
-          *)
-            case "$PROCESS_STARTED" in
-              ''|*[!0-9]*) TRANSCRIPT_REASON=transcript-age-unverifiable; TRANSCRIPT= ;;
-              *)
-                if [ "$TRANSCRIPT_MTIME" -lt "$PROCESS_STARTED" ]; then
-                  TRANSCRIPT_REASON=selected-transcript-predates-active-session
-                  TRANSCRIPT=
-                fi
-                ;;
-            esac
-            ;;
-        esac
+      if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+        SESSION_TRANSCRIPT="$PROJECT_DIR/${CLAUDE_CODE_SESSION_ID}.jsonl"
+        if [ -f "$SESSION_TRANSCRIPT" ]; then
+          TRANSCRIPT=$SESSION_TRANSCRIPT
+        else
+          TRANSCRIPT_REASON=session-id-transcript-missing
+        fi
+      else
+        TRANSCRIPT=$(newest_transcript_in "$PROJECT_DIR" 2>/dev/null || true)
+        if [ -z "$TRANSCRIPT" ]; then
+          TRANSCRIPT_REASON=ambiguous-or-missing-current-transcript
+        fi
+        if [ -n "$TRANSCRIPT" ]; then
+          TRANSCRIPT_MTIME=$(file_mtime "$TRANSCRIPT" 2>/dev/null || printf '%s' 0)
+          PROCESS_STARTED=$(process_start_epoch "$CLAUDE_PID" 2>/dev/null || printf '%s' 0)
+          case "$TRANSCRIPT_MTIME" in
+            ''|*[!0-9]*) TRANSCRIPT_REASON=transcript-age-unverifiable; TRANSCRIPT= ;;
+            *)
+              case "$PROCESS_STARTED" in
+                ''|*[!0-9]*) TRANSCRIPT_REASON=transcript-age-unverifiable; TRANSCRIPT= ;;
+                *)
+                  if [ "$TRANSCRIPT_MTIME" -lt "$PROCESS_STARTED" ]; then
+                    TRANSCRIPT_REASON=selected-transcript-predates-active-session
+                    TRANSCRIPT=
+                  fi
+                  ;;
+              esac
+              ;;
+          esac
+        fi
       fi
     else
       TRANSCRIPT_REASON=current-claude-directory-unreadable
@@ -261,8 +275,8 @@ fi
 TRANSCRIPT_ABS=$(absolute_path "$TRANSCRIPT" 2>/dev/null || printf '%s' "$TRANSCRIPT")
 if [ -z "$WINDOW" ]; then
   if [ "$MODE" = machine ]; then
-    printf 'status=known tokens=%s window=unknown model=%s session=%s transcript=%s band=%.1f compact=unknown\n' \
-      "$TOKENS" "$MODEL" "$SESSION" "$TRANSCRIPT_ABS" "$BAND_PERCENT"
+    printf 'status=known tokens=%s window=unknown model=%s session=%s transcript=%s band=%.1f compact=unknown window_source=%s\n' \
+      "$TOKENS" "$MODEL" "$SESSION" "$TRANSCRIPT_ABS" "$BAND_PERCENT" "$WINDOW_SOURCE"
   else
     printf 'context usage: %s tokens (window unknown; model %s; percentage unavailable; transcript %s)\n' \
       "$TOKENS" "$MODEL" "$TRANSCRIPT_ABS"

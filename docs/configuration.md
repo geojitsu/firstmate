@@ -27,7 +27,7 @@ Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, whil
 ## Context window measurement and compaction advice
 
 `bin/fm-context-usage.sh` reads the newest measured usage record from the current Claude or Pi session transcript and never writes session state or attempts compaction.
-Claude transcript selection requires a confident current-session binding, while `FM_CONTEXT_USAGE_TRANSCRIPT` and Pi's `PI_SESSION_FILE` provide exact bindings for their active sessions; an unproven or ambiguous selection is reported as unknown.
+Claude transcript selection requires a confident current-session binding: the invoking Claude ancestor's own `CLAUDE_CODE_SESSION_ID`, when set, selects that session's transcript directly ahead of the mtime heuristic, which otherwise applies only when that variable is absent; `FM_CONTEXT_USAGE_TRANSCRIPT` and Pi's `PI_SESSION_FILE` provide exact bindings for their active sessions; an unproven or ambiguous selection is reported as unknown.
 The command sums `input_tokens`, `cache_read_input_tokens`, and `cache_creation_input_tokens` for Claude records, with Pi's corresponding measured fields supported when a Pi transcript is the exact current-session binding.
 The recommended compaction band is roughly 50-60% of the context window, and the boundary advice uses the lower 50% edge so it can act before retrieval and summarization quality degrade further.
 The current Anthropic model documentation identifies a 1,000,000-token context window for Claude Opus 5 and the current Claude model families Firstmate recognizes.

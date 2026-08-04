@@ -134,24 +134,60 @@ printf '%s\\n' '{"type":"assistant","message":{"model":"claude-opus-5","usage":{
 HOME='$home' PI_SESSION_FILE='' '$USAGE' --machine
 EOF
   chmod +x "$driver"
-  out=$(cd "$cwd" && HOME="$home" PI_SESSION_FILE='' env -u FM_CONTEXT_USAGE_TRANSCRIPT \
+  out=$(cd "$cwd" && HOME="$home" PI_SESSION_FILE='' env -u FM_CONTEXT_USAGE_TRANSCRIPT -u CLAUDE_CODE_SESSION_ID \
     bash -c "exec -a claude bash '$driver'") || fail "auto current-session selection failed"
   assert_contains "$out" "status=known tokens=600" "newest transcript was not bound to the active Claude process"
 
   rm -f "$current"
-  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"cache_read_input_tokens":10,"cache_creation_input_tokens":10}},"session_id":"sibling-a"}' > "$project/sibling-a.jsonl"
-  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":20,"cache_read_input_tokens":20,"cache_creation_input_tokens":20}},"session_id":"sibling-b"}' > "$project/sibling-b.jsonl"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"cache_read_input_tokens":10,"cache_creation_input_tokens":10}},"session_id":"sibling-a"}' > "$project/sibling-a.jsonl"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":20,"cache_read_input_tokens":20,"cache_creation_input_tokens":20}},"session_id":"sibling-b"}' > "$project/sibling-b.jsonl"
   touch -t 202608041500 "$project/sibling-a.jsonl" "$project/sibling-b.jsonl"
   cat > "$driver" <<EOF
 #!/usr/bin/env bash
 HOME='$home' PI_SESSION_FILE='' '$USAGE' --machine
 EOF
   chmod +x "$driver"
-  out=$(cd "$cwd" && HOME="$home" PI_SESSION_FILE='' env -u FM_CONTEXT_USAGE_TRANSCRIPT \
+  out=$(cd "$cwd" && HOME="$home" PI_SESSION_FILE='' env -u FM_CONTEXT_USAGE_TRANSCRIPT -u CLAUDE_CODE_SESSION_ID \
     bash -c "exec -a claude bash '$driver'") || fail "ambiguous sibling selection failed"
   assert_contains "$out" "status=unknown" "equal-mtime sibling transcripts were not rejected"
   assert_contains "$out" "ambiguous-or-missing-current-transcript" "sibling ambiguity reason was unclear"
   pass "current-session selection accepts the active transcript and rejects sibling ambiguity"
+}
+
+test_session_id_env_binds_exact_transcript() {
+  local home cwd slug project bound sibling driver out
+  home="$TMP_ROOT/session-id-home"
+  cwd="$TMP_ROOT/session-id-cwd"
+  mkdir -p "$home/.claude/projects" "$cwd"
+  slug=$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')
+  project="$home/.claude/projects/$slug"
+  mkdir -p "$project"
+  bound="$project/bound-session.jsonl"
+  sibling="$project/sibling-session.jsonl"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":100,"cache_read_input_tokens":200,"cache_creation_input_tokens":300}},"session_id":"bound-session"}' > "$bound"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":9000,"cache_read_input_tokens":9000,"cache_creation_input_tokens":9000}},"session_id":"sibling-session"}' > "$sibling"
+  touch -t 202001010000 "$bound"
+  touch -t 202608041600 "$sibling"
+  driver="$TMP_ROOT/claude-session-id-driver.sh"
+  cat > "$driver" <<EOF
+#!/usr/bin/env bash
+HOME='$home' PI_SESSION_FILE='' CLAUDE_CODE_SESSION_ID='bound-session' '$USAGE' --machine
+EOF
+  chmod +x "$driver"
+  out=$(cd "$cwd" && HOME="$home" PI_SESSION_FILE='' env -u FM_CONTEXT_USAGE_TRANSCRIPT -u CLAUDE_CODE_SESSION_ID \
+    bash -c "exec -a claude bash '$driver'") || fail "session-id exact binding command failed"
+  assert_contains "$out" "status=known tokens=600" "CLAUDE_CODE_SESSION_ID did not bind the exact transcript"
+  assert_not_contains "$out" "tokens=27000" "CLAUDE_CODE_SESSION_ID selection used a newer sibling instead of the exact match"
+
+  cat > "$driver" <<EOF
+#!/usr/bin/env bash
+HOME='$home' PI_SESSION_FILE='' CLAUDE_CODE_SESSION_ID='missing-session' '$USAGE' --machine
+EOF
+  chmod +x "$driver"
+  out=$(cd "$cwd" && HOME="$home" PI_SESSION_FILE='' env -u FM_CONTEXT_USAGE_TRANSCRIPT -u CLAUDE_CODE_SESSION_ID \
+    bash -c "exec -a claude bash '$driver'") || fail "session-id missing-transcript command failed"
+  assert_contains "$out" "status=unknown reason=session-id-transcript-missing" "an unmatched CLAUDE_CODE_SESSION_ID was not explicit"
+  pass "CLAUDE_CODE_SESSION_ID binds the exact transcript ahead of sibling mtimes"
 }
 
 test_skill_boundary_contract() {
@@ -182,6 +218,7 @@ test_unknown_transcript_states
 test_unknown_window_and_override
 test_ambiguous_current_session_stays_unknown
 test_auto_selection_rejects_siblings
+test_session_id_env_binds_exact_transcript
 test_skill_boundary_contract
 test_command_is_read_only
 printf 'all fm-context-usage tests passed\n'
