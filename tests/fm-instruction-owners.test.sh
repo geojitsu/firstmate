@@ -208,6 +208,65 @@ test_state_startup_and_ordinary_recovery_placement() {
   pass "state, startup, and ordinary recovery have focused owners and triggers"
 }
 
+# The session-start hook fires on startup, resume, and clear but not on compact,
+# so the compaction re-grounding rule must live in always-loaded AGENTS.md rather
+# than a skill nothing would load at that moment. Section 3 owns the once-per-
+# session-start digest and must not restate it.
+test_recovery_covers_compaction_regrounding() {
+  local recovery_section section_three
+  recovery_section=$(awk '/^## 5\. Recovery/,/^## 6\./' "$AGENTS")
+  section_three=$(awk '/^## 3\. Session start/,/^## 4\./' "$AGENTS")
+  assert_contains "$recovery_section" \
+    'A restart must be a non-event because durable state and live backend inventory, not conversation memory, are authoritative.' \
+    "recovery lost the principle the compaction rule extends"
+  assert_contains "$recovery_section" \
+    'The same holds after a context compaction, which produces no session-start digest' \
+    "recovery does not extend re-grounding to context compaction"
+  assert_contains "$recovery_section" \
+    'Run `bin/fm-bearings-snapshot.sh` and trust it over that summary' \
+    "recovery does not name the authority over the carried-over summary"
+  assert_present "$ROOT/bin/fm-bearings-snapshot.sh" \
+    "recovery cites bin/fm-bearings-snapshot.sh but the script is absent"
+  assert_not_contains "$section_three" 'fm-bearings-snapshot.sh' \
+    "the compaction rule was duplicated into the session-start digest owner"
+  assert_not_contains "$section_three" 'context compaction' \
+    "the compaction rule was duplicated into the session-start digest owner"
+  pass "recovery extends re-grounding to compaction without duplicating section 3"
+}
+
+# A crewmate parked on an already-escalated, still-open decision is not a wedge.
+# The ladder records that park through the owner script before it may interrupt or
+# relaunch, and `bin/fm-decision-hold.sh` owns the status-line verb and key
+# grammar, so the ladder must point at it rather than restate the grammar.
+test_recovery_ladder_records_confirmed_captain_held_parks() {
+  local ladder step_two
+  ladder=$(awk '/^Escalate in order:/,0' "$RECOVERY")
+  step_two=$(printf '%s\n' "$ladder" | awk '/^2\. /,/^3\. /')
+  assert_contains "$ladder" '1. Peek the pane.' "the ladder no longer starts with the peek"
+  assert_contains "$step_two" 'parked awaiting a decision firstmate has already escalated' \
+    "the ladder has no step for a confirmed park on an escalated decision"
+  assert_contains "$step_two" '`bin/fm-decision-hold.sh`' \
+    "the confirmed-park step does not route through the decision-hold owner"
+  assert_contains "$step_two" 'never by writing the status marker by hand' \
+    "the confirmed-park step allows a hand-written status marker"
+  assert_contains "$step_two" 'Only a confirmed park on a still-open decision qualifies' \
+    "the confirmed-park step lost its safety qualifier"
+  assert_contains "$step_two" 'continue down this ladder so a genuinely wedged crewmate still escalates' \
+    "an unconfirmed park no longer falls through to the escalation ladder"
+  assert_present "$ROOT/bin/fm-decision-hold.sh" \
+    "the ladder cites bin/fm-decision-hold.sh but the script is absent"
+  assert_not_contains "$ladder" '[key=' \
+    "the ladder restated the decision-key grammar owned by bin/fm-classify-lib.sh"
+  assert_not_contains "$ladder" 'captain-held [' \
+    "the ladder restated the status-line verb owned by bin/fm-classify-lib.sh"
+  # Interrupt and relaunch must stay below the confirmed-park step.
+  assert_contains "$ladder" '4. If the crewmate is confused or looping, interrupt' \
+    "the interrupt step was not renumbered below the confirmed-park step"
+  assert_contains "$ladder" '5. If the crewmate is genuinely wedged after redirection' \
+    "the relaunch step was not renumbered below the confirmed-park step"
+  pass "the escalation ladder records confirmed captain-held parks before escalating"
+}
+
 test_compressed_agents_owner_map() {
   assert_grep '`docs/configuration.md` is the single owner of the top-level operational-home layout' "$AGENTS" \
     "AGENTS.md lost the state-layout owner pointer"
@@ -294,6 +353,8 @@ test_agent_owned_quota_array_dispatch_contract
 test_shared_authoring_requirements_are_owned
 test_secondmate_registry_contract_stays_concise
 test_state_startup_and_ordinary_recovery_placement
+test_recovery_covers_compaction_regrounding
+test_recovery_ladder_records_confirmed_captain_held_parks
 test_compressed_agents_owner_map
 test_intake_reuses_evidence_and_parallelizes_safe_work
 test_compressed_agents_retains_authority_and_supervision_safety
