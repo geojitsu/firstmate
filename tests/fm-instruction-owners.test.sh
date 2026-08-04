@@ -235,9 +235,10 @@ test_recovery_covers_compaction_regrounding() {
 }
 
 # A crewmate parked on an already-escalated, still-open decision is not a wedge.
-# The ladder records that park through the owner script before it may interrupt or
-# relaunch, and `bin/fm-decision-hold.sh` owns the status-line verb and key
-# grammar, so the ladder must point at it rather than restate the grammar.
+# The ladder records that park through `bin/fm-decision-hold.sh`, which writes the
+# status line, before it may interrupt or relaunch. `bin/fm-classify-lib.sh` owns
+# the status-line verb and the `[key=<slug>]` grammar, so the ladder must point at
+# the writer rather than restate that grammar.
 test_recovery_ladder_records_confirmed_captain_held_parks() {
   local ladder step_two
   ladder=$(awk '/^Escalate in order:/,0' "$RECOVERY")
