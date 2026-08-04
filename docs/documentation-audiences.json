@@ -212,6 +212,42 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/bugs/2026-07-31-captain-input-cf-bitmap-null-gdip-bitmap.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/bugs/2026-07-31-captain-input-clipboard-callback-reentrancy.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/bugs/2026-07-31-captain-input-clipboard-not-opened.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/bugs/2026-07-31-captain-input-critical-hang.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/bugs/2026-07-31-captain-input-gdiplus-shutdown-crash.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/bugs/2026-07-31-captain-input-gdiplus-shutdown-removed.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/bugs/2026-07-31-captain-input-gdiplus-startup-status-inverted.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/bugs/2026-07-31-captain-input-ssh-hang-missing-nt-flags.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/bugs/2026-07-31-captain-input-unchecked-upload-exit-codes.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/calm-mode-feasibility.md",
       "audience": "maintainer-verification"
     },
