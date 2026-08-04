@@ -196,6 +196,8 @@ Each secondmate reconciles work already in its own home and then idles; recovery
 If away mode is present, load `/afk` and let its daemon own supervision rather than arming another cycle.
 Surface only captain-relevant decisions, review-ready PRs, failures, and credential needs; otherwise resume the emitted supervision protocol silently.
 A restart must be a non-event because durable state and live backend inventory, not conversation memory, are authoritative.
+The same holds after a context compaction, which produces no session-start digest, so the carried-over summary is unverified rather than current.
+Run `bin/fm-bearings-snapshot.sh` and trust it over that summary before answering anything about fleet, task, or delivery status.
 
 ## 6. Project and knowledge management
 

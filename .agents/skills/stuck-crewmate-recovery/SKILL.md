@@ -39,11 +39,13 @@ If the worktree or ownership cannot be reconciled safely, leave all state intact
 Escalate in order:
 
 1. Peek the pane.
-2. If the crewmate is waiting on a question its brief already answers, answer in one line via `FM_HOME=<this-firstmate-home> bin/fm-send.sh` from an active firstmate session unless `FM_HOME` is already set to the active firstmate home.
-3. If the crewmate is confused or looping, interrupt with the adapter's interrupt key, then redirect with one corrective line.
+2. If the peek confirms the crewmate is parked awaiting a decision firstmate has already escalated and that is still genuinely outstanding, record that park durably as a `captain-held` status line keyed to that decision, using the verb and key grammar owned by `bin/fm-classify-lib.sh`, then stop re-inspecting this pane instead of escalating it further.
+   Only a confirmed park on a still-open decision qualifies; if the park or the decision cannot be confirmed, continue down this ladder so a genuinely wedged crewmate still escalates.
+3. If the crewmate is waiting on a question its brief already answers, answer in one line via `FM_HOME=<this-firstmate-home> bin/fm-send.sh` from an active firstmate session unless `FM_HOME` is already set to the active firstmate home.
+4. If the crewmate is confused or looping, interrupt with the adapter's interrupt key, then redirect with one corrective line.
    For example, for a single-Escape adapter: `FM_HOME=<this-firstmate-home> bin/fm-send.sh <window> --key Escape`.
-4. If the crewmate is genuinely wedged after redirection, exit the agent with the adapter's exit command and relaunch with the same brief plus a `progress so far` note appended to it.
+5. If the crewmate is genuinely wedged after redirection, exit the agent with the adapter's exit command and relaunch with the same brief plus a `progress so far` note appended to it.
    Genuine wedging means looping, unresponsive, repeating the same obstacle, or truly dead.
    A low context reading is not wedging; modern harnesses auto-compact and keep going.
    The worktree and commits persist, so relaunch is cheap.
-5. If a second relaunch fails too, write `failed` to the backlog and tell the captain the plain failure, preserved work, and consequence using `AGENTS.md` section 9; do not mention metadata, harness, window, or worktree unless the path itself is needed for action.
+6. If a second relaunch fails too, write `failed` to the backlog and tell the captain the plain failure, preserved work, and consequence using `AGENTS.md` section 9; do not mention metadata, harness, window, or worktree unless the path itself is needed for action.
