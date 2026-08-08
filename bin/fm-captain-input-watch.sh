@@ -4,7 +4,7 @@
 # Not run directly by the watcher: bin/fm-captain-input-enable.sh writes a
 # trampoline to state/captain-input.check.sh that execs this trusted repository
 # script, then binds the trampoline's bytes with bin/fm-check-register.sh. This
-# is the same trust split X mode uses (a byte-bound state/ shim execs a real
+# is the same trust split Relay uses (a byte-bound state/ shim execs a real
 # script the watcher never hashes because it is already git-controlled) applied
 # through the generic custom-check mechanism instead of a special-cased shim.
 #

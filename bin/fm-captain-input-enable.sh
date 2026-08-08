@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time per-home setup for the captain-input screenshot-drop channel
-# (Phase 1). Unlike X mode, this is not wired into bootstrap's continuous
+# (Phase 1). Unlike Relay, this is not wired into bootstrap's continuous
 # convergence sweep: firstmate runs this once to turn the channel on, and the
 # channel's inertness when never run is structural, not a runtime check - an
 # unregistered state/captain-input.check.sh is simply never executed by the
@@ -15,7 +15,7 @@
 #      authorization boundary per the design report's security posture (SSH
 #      auth to this account already gates who can write there).
 #   3. Write or refresh the fast-cadence env file the watcher sources at
-#      process start: if config/x-mode.env already exists (X mode is on for
+#      process start: if config/x-mode.env already exists (Relay is on for
 #      this home), its FM_CHECK_INTERVAL is reused and nothing new is written;
 #      otherwise config/captain-input.env is written with FM_CHECK_INTERVAL=15,
 #      the verified cadence floor (bin/fm-watch.sh's main loop only gates the
