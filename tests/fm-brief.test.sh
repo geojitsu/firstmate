@@ -376,7 +376,7 @@ test_ship_e2e_visual_review_pointer() {
   home="$TMP_ROOT/e2e-visual-review-home"
   mkdir -p "$home/data"
   id="brief-e2e-visual-review-c2"
-  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "# E2E Visual Review" "$brief" \
