@@ -666,10 +666,24 @@ run_send_case() {  # <bin-root> <fakebin> <log> <home> -- <send args...>
     "$bin/bin/fm-send.sh" "$@" >/dev/null 2>&1
 }
 
+# Normalizes the log down to what fm-send actually SENDS: the new-only pane_id
+# preflight is dropped, and the read-only composer capture's row range is
+# canonicalized. The composer reader legitimately changed shape (a cursor-row
+# read became a full-pane structural read), and how the pane is INSPECTED is not
+# part of the send-command conformance this comparison protects; the probe
+# itself is still compared, only its -S/-E bounds are normalized away.
 strip_send_preflight() {  # <log>
-  local preflight
+  local preflight us
   preflight=$'tmux\x1fdisplay-message\x1f-p\x1f-t\x1fsess:win\x1f#{pane_id}'
-  awk -v preflight="$preflight" '$0 != preflight { print }' "$1"
+  us=$'\x1f'
+  awk -v preflight="$preflight" -v us="$us" '
+    $0 == preflight { next }
+    index($0, us "capture-pane" us) {
+      i = index($0, us "-S" us)
+      if (i > 0) { $0 = substr($0, 1, i - 1) us "<range>" }
+    }
+    { print }
+  ' "$1"
 }
 
 test_send_conformance_old_vs_new() {
