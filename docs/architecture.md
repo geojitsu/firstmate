@@ -260,6 +260,13 @@ The helper requires a full `https://github.com/<owner>/<repo>/pull/<n>` URL, inv
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
 
+## Engineering-craft skills in ship briefs
+
+`bin/fm-brief.sh` adds a compact engineering-craft index to ship briefs so crewmates can load the relevant leaf skill without enlarging the always-loaded firstmate contract.
+The index covers 21 internal `principle-*` skills ported from the pstack engineering-craft set, while `blast-radius` is conditionally pointed to when a task touches shared state, locks, or wake handling.
+Those crewmate-facing principles stay out of `AGENTS.md` section 13's firstmate trigger list; the `blast-radius` trigger is listed there because firstmate reviews the safety evidence for those changes.
+The `principle-never-block-on-the-human` entry is explicitly limited to reversible work within the accepted task contract, and firstmate's authority and escalation rules remain controlling for needs-decision findings.
+
 ## Optional Relay
 
 Relay is opt-in presence for the shared `@myfirstmate` bot on both public surfaces it supports, X and Discord.
