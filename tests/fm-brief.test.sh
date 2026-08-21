@@ -394,6 +394,52 @@ test_ship_e2e_visual_review_pointer() {
   pass "fm-brief.sh: ship briefs point at the e2e-visual-review protocol"
 }
 
+test_ship_engineering_craft_pointers() {
+  local home id brief skill
+  home="$TMP_ROOT/engineering-craft-home"
+  mkdir -p "$home/data"
+  id="brief-engineering-craft-d3"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "engineering-craft brief was not scaffolded"
+  assert_grep "# Engineering craft" "$brief" \
+    "ship brief missing the engineering-craft section"
+  while IFS= read -r skill; do
+    assert_grep "\`$skill\`" "$brief" \
+      "ship brief missing the principles index entry for $skill"
+  done <<'SKILLS'
+principle-boundary-discipline
+principle-build-the-lever
+principle-encode-lessons-in-structure
+principle-exhaust-the-design-space
+principle-experience-first
+principle-fix-root-causes
+principle-foundational-thinking
+principle-guard-the-context-window
+principle-laziness-protocol
+principle-make-operations-idempotent
+principle-migrate-callers-then-delete-legacy-apis
+principle-minimize-reader-load
+principle-model-the-domain
+principle-never-block-on-the-human
+principle-outcome-oriented-execution
+principle-prove-it-works
+principle-redesign-from-first-principles
+principle-separate-before-serializing-shared-state
+principle-sequence-verifiable-units
+principle-subtract-before-you-add
+principle-type-system-discipline
+SKILLS
+  assert_grep "$ROOT/.agents/skills/blast-radius/SKILL.md" "$brief" \
+    "ship brief missing the conditional blast-radius pointer"
+  assert_grep "touches shared state, locks, or wake handling" "$brief" \
+    "ship brief missing the blast-radius trigger condition"
+  assert_grep "within the accepted task contract" "$brief" \
+    "ship brief missing the never-block-on-the-human authority boundary"
+  pass "fm-brief.sh: ship briefs carry the engineering-craft index and blast-radius trigger"
+}
+
 test_scout_e2e_visual_review_pointer() {
   local home id brief
   home="$TMP_ROOT/e2e-visual-review-scout-home"
@@ -767,6 +813,7 @@ test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_ship_e2e_visual_review_pointer
+test_ship_engineering_craft_pointers
 test_scout_e2e_visual_review_pointer
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
