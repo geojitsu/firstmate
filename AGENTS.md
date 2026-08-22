@@ -553,6 +553,9 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.
 - `blast-radius` - load before reviewing a change that touches shared state, locks, or wake handling, and prove the critical safety fact with real code before reporting it safe.
 - `context-compaction-advice` - load at a task cleanup, a fully read investigation report, a durably recorded captain decision, or an explicitly abandoned approach; it advises only when measured context is at the documented band and never acts on the session.
+- The generated engineering-craft catalog in `bin/fm-brief-engineering-craft.generated.md` lists the imported pstack worker skills and their triggers; load `architect`, `tdd`, `how`, `teach`, or `create-verification-skill` for their Tier 2 design, testing, explanation, teaching, or verification tasks.
+- Load `why`, `interrogate`, `arena`, `technical-writing`, or `unslop` for their Tier 3 rationale, review, bounded alternatives, documentation, or prose-cleanup triggers; any worker routing remains advisory until Firstmate dispatches it.
+- Load `figure-it-out`, `maintain-verification-skill`, `bro`, or `typescript-best-practices` only for their standalone planning, verification-maintenance, communication, or TypeScript triggers; these agent-only skills never override Firstmate delivery, decision, or authority contracts.
 
 ## 14. Relay
 

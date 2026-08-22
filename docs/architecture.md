@@ -262,10 +262,20 @@ Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committe
 
 ## Engineering-craft skills in ship briefs
 
-`bin/fm-brief.sh` adds a compact engineering-craft index to ship briefs so crewmates can load the relevant leaf skill without enlarging the always-loaded firstmate contract.
-The index covers 21 internal `principle-*` skills ported from the pstack engineering-craft set, while `blast-radius` is conditionally pointed to when a task touches shared state, locks, or wake handling.
-Those crewmate-facing principles stay out of `AGENTS.md` section 13's firstmate trigger list; the `blast-radius` trigger is listed there because firstmate reviews the safety evidence for those changes.
-The `principle-never-block-on-the-human` entry is explicitly limited to reversible work within the accepted task contract, and firstmate's authority and escalation rules remain controlling for needs-decision findings.
+`bin/fm-pstack-sync.lock.json` is the single machine-readable owner of the upstream repository, commit pin, allowlist, exclusions, frontmatter policy, compatibility substitutions, and brief budget.
+The current source is `https://github.com/cursor/plugins` at commit `fd6dd6f7276956a532bb78a748a8d2818b6eb5f4`.
+The allowlist imports Tier 2 `architect`, `tdd`, `how`, `teach`, and `create-verification-skill`, Tier 3 `why`, `interrogate`, `arena`, `technical-writing`, and `unslop`, plus the standalone leaves `figure-it-out`, `maintain-verification-skill`, `bro`, and `typescript-best-practices`.
+The importer excludes Cursor-only modes and routing, `poteto-mode`, `setup-pstack`, `orch`, `watch-pr`, `worktree-audit.sh`, `automate-me`, `recall`, `automations/benny`, Graphite playbooks, swarm-only control, and principles already owned by Firstmate.
+Run `bin/fm-pstack-sync.sh --check` to verify the committed generated skills and catalog without network access.
+Run `bin/fm-pstack-sync.sh --source <verified-checkout>` for an offline pinned import, or run it without `--source` to fetch the exact lock commit into a temporary checkout.
+The importer never deletes omitted skills and stops on divergent generated output; review the diff and use `--accept-reviewed` only after accepting a deliberate adaptation.
+Rollback is a git revert of the single import commit or PR, which removes the lock, importer, generated catalog, and imported skill tree together.
+Ordinary worker intake reads the committed local skills and never requires source acquisition or network access merely to load a principle.
+`bin/fm-brief.sh` reads `bin/fm-brief-engineering-craft.generated.md`, so briefs carry only the compact trigger catalog and load full skill bodies lazily.
+The documented budget is 2,800 words for a generated ship brief and 1,500 words for the catalog, compared with the 1,762-word pre-import brief; the regression check also proves imported bodies are not injected.
+Run `bin/fm-test-run.sh tests/fm-pstack-sync.test.sh tests/fm-brief.test.sh` to verify pinning, exclusions, frontmatter conversion, idempotence, conflict handling, generated wiring, and the token budget.
+Imported review or candidate fan-out remains optional and worker-directed through Firstmate dispatch; it never creates automatic adversarial review, a parallel swarm, or a second PR/CI control plane.
+Firstmate's delivery authority, no-mistakes ownership, isolated-worker rules, decision holds, and captain authority override imported prose.
 
 ## Optional Relay
 

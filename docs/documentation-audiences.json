@@ -113,11 +113,19 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/architect/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/ahoy/SKILL.md",
       "audience": "agent-runtime"
     },
     {
       "path": ".agents/skills/app-test-review/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/arena/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -137,6 +145,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/bro/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/create-verification-skill/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/context-compaction-advice/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -150,6 +166,10 @@
     },
     {
       "path": ".agents/skills/e2e-visual-review/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/figure-it-out/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -170,6 +190,18 @@
     },
     {
       "path": ".agents/skills/harness-adapters/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/how/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/interrogate/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/maintain-verification-skill/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -254,6 +286,34 @@
     },
     {
       "path": ".agents/skills/principle-type-system-discipline/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/tdd/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/teach/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/technical-writing/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/typescript-best-practices/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unslop/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "bin/fm-brief-engineering-craft.generated.md",
       "audience": "agent-runtime"
     },
     {
@@ -527,6 +587,114 @@
     {
       "path": "docs/zellij-backend.md",
       "audience": "operator-current"
+    },
+    {
+      "path": ".agents/skills/architect/references/design-red-flags.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/architect/references/rationale-template.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/architect/references/runner-prompt.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/create-verification-skill/references/feature-map-example/README.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/create-verification-skill/references/feature-map-example/create-note.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/create-verification-skill/references/feature-map-example/search.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/how/references/critic-prompt.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/how/references/critique-rubric.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/how/references/explainer-prompt.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/how/references/explorer-prompt.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/interrogate/references/code-quality-review.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/interrogate/references/lead-judgment.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/interrogate/references/reviewer-prompt.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/interrogate/references/rubric.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/typescript-best-practices/references/patterns.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/epistemics.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/investigator-prompt.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/source-playbook.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/sources/code-archaeology.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/sources/databricks.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/sources/datadog.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/sources/incident-postmortem.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/sources/linear.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/sources/notion.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/sources/sentry.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/sources/slack.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/why/references/synthesizer-prompt.md",
+      "audience": "agent-runtime"
     },
     {
       "path": "skills/stow/SKILL.md",
