@@ -266,7 +266,8 @@ Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committe
 The current source is `https://github.com/cursor/plugins` at commit `fd6dd6f7276956a532bb78a748a8d2818b6eb5f4`.
 The allowlist imports Tier 2 `architect`, `tdd`, `how`, `teach`, and `create-verification-skill`, Tier 3 `why`, `interrogate`, `arena`, `technical-writing`, and `unslop`, plus the standalone leaves `figure-it-out`, `maintain-verification-skill`, `bro`, and `typescript-best-practices`.
 The importer excludes Cursor-only modes and routing, `poteto-mode`, `setup-pstack`, `orch`, `watch-pr`, `worktree-audit.sh`, `automate-me`, `recall`, `automations/benny`, Graphite playbooks, swarm-only control, and principles already owned by Firstmate.
-Run `bin/fm-pstack-sync.sh --check` to verify the committed generated skills and catalog without network access.
+Run `bin/fm-pstack-sync.sh --check` to fetch the pinned upstream commit and verify the committed generated skills and catalog against it.
+Run `bin/fm-pstack-sync.sh --check --source <verified-checkout>` to verify the same generated outputs without network access, using an already-verified local checkout instead of fetching.
 Run `bin/fm-pstack-sync.sh --source <verified-checkout>` for an offline pinned import, or run it without `--source` to fetch the exact lock commit into a temporary checkout.
 The importer never deletes omitted skills and stops on divergent generated output; review the diff and use `--accept-reviewed` only after accepting a deliberate adaptation.
 Rollback is a git revert of the single import commit or PR, which removes the lock, importer, generated catalog, and imported skill tree together.
