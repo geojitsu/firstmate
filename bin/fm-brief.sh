@@ -298,47 +298,12 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
-IFS= read -r -d '' ENGINEERING_CRAFT_SECTION <<'EOF' || true
-# Engineering craft
-These agent-only skills provide the engineering-craft principles ported into firstmate.
-Read the full leaf skill under `__FM_ROOT__/.agents/skills/<name>/SKILL.md` when its trigger applies.
-
-**Core**
-- **Laziness Protocol** (`principle-laziness-protocol`) - Apply when refactoring, sizing a diff, or tempted to add abstractions, layers, or signal threading; bias to deletion and the smallest change that solves the problem.
-- **Foundational Thinking** (`principle-foundational-thinking`) - Apply before writing logic to choose core types and data structures, sequence scaffold-vs-feature work, and identify what concurrent actors share.
-- **Redesign from First Principles** (`principle-redesign-from-first-principles`) - Apply when integrating a new requirement into an existing design; redesign as if it had been foundational from day one.
-- **Subtract Before You Add** (`principle-subtract-before-you-add`) - Apply when sequencing an addition, refactor, or rewrite; remove dead weight before building on the simpler base.
-- **Minimize Reader Load** (`principle-minimize-reader-load`) - Apply when reviewing or shaping code that is hard to trace; count layers and hidden state, collapse one-caller wrappers, and shrink mutable scope.
-- **Outcome-Oriented Execution** (`principle-outcome-oriented-execution`) - Apply to planned rewrites and migrations with explicit phase boundaries; converge on the target architecture instead of preserving throwaway compatibility states.
-- **Experience First** (`principle-experience-first`) - Apply when product, UX, or feature-scope tradeoffs arise; choose user delight over implementation convenience.
-- **Exhaust the Design Space** (`principle-exhaust-the-design-space`) - Apply to a novel interaction or architectural decision with no precedent; build 2-3 competing prototypes and compare before committing.
-- **Build the Lever** (`principle-build-the-lever`) - Apply to any non-trivial work; build the tool that does or proves it so a reviewer can rerun the artifact.
-
-**Architecture**
-- **Model the Domain** (`principle-model-the-domain`) - Apply when writing stateful logic or when branching and repeated shape assumptions spread across files; encode the domain in a structure instead of scattered conditionals.
-- **Boundary Discipline** (`principle-boundary-discipline`) - Apply when wiring validation, error handling, or framework adapters; guard at system boundaries, trust internal types, and keep business logic pure.
-- **Type System Discipline** (`principle-type-system-discipline`) - Apply when designing types or signatures in any typed language; make illegal states unrepresentable, brand primitives, and parse external data at boundaries.
-- **Make Operations Idempotent** (`principle-make-operations-idempotent`) - Apply when designing commands, lifecycle steps, or loops that run amid crashes and retries; converge to the same end state.
-- **Migrate Callers Then Delete Legacy APIs** (`principle-migrate-callers-then-delete-legacy-apis`) - Apply when introducing a new internal API while old callers exist; migrate callers and delete the old API in one wave.
-- **Separate Before Serializing Shared State** (`principle-separate-before-serializing-shared-state`) - Apply when concurrent actors might write the same file, branch, key, or object; eliminate sharing before serializing access.
-
-**Verification**
-- **Prove It Works** (`principle-prove-it-works`) - Apply after a task and before declaring done; verify against the real artifact, not a proxy or "it compiles".
-- **Fix Root Causes** (`principle-fix-root-causes`) - Apply when debugging; trace each symptom to its root cause and reproduce before fixing.
-- **Sequence Work into Verifiable Units** (`principle-sequence-verifiable-units`) - Apply to multi-step work and delivery sequencing; break it into small units that each end in a check.
-
-**Delegation**
-- **Guard the Context Window** (`principle-guard-the-context-window`) - Apply when context fills up with large outputs, long files, repeated reads, or fan-out planning; route bulk away and keep summaries in the main thread.
-- **Never Block on the Human** (`principle-never-block-on-the-human`) - Apply to reversible work within the accepted task contract; proceed and present the result, while firstmate's escalation rules still govern needs-decision findings.
-
-**Meta**
-- **Encode Lessons in Structure** (`principle-encode-lessons-in-structure`) - Apply when writing the same instruction a second time or noticing a recurring correction; encode it as a lint, metadata flag, runtime check, or script.
-
-If this task touches shared state, locks, or wake handling, load `__FM_ROOT__/.agents/skills/blast-radius/SKILL.md` before implementation and use its evidence ladder to prove the critical safety fact with real code.
-EOF
-ENGINEERING_CRAFT_SECTION=${ENGINEERING_CRAFT_SECTION//__FM_ROOT__/$FM_ROOT}
-ENGINEERING_CRAFT_SECTION=${ENGINEERING_CRAFT_SECTION%$'\n'}
-
+ENGINEERING_CRAFT_INDEX="$SCRIPT_DIR/fm-brief-engineering-craft.generated.md"
+[ -f "$ENGINEERING_CRAFT_INDEX" ] || {
+  echo "error: generated engineering-craft index is missing: $ENGINEERING_CRAFT_INDEX" >&2
+  exit 1
+}
+ENGINEERING_CRAFT_SECTION=$(sed "s|__FM_ROOT__|$FM_ROOT|g" "$ENGINEERING_CRAFT_INDEX")
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.

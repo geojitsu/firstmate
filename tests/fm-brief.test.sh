@@ -395,7 +395,7 @@ test_ship_e2e_visual_review_pointer() {
 }
 
 test_ship_engineering_craft_pointers() {
-  local home id brief skill
+  local home id brief skill brief_words catalog_words full_skill_words max_words catalog_max_words
   home="$TMP_ROOT/engineering-craft-home"
   mkdir -p "$home/data"
   id="brief-engineering-craft-d3"
@@ -431,12 +431,40 @@ principle-sequence-verifiable-units
 principle-subtract-before-you-add
 principle-type-system-discipline
 SKILLS
+  while IFS= read -r skill; do
+    assert_grep "\`$skill\`" "$brief" \
+      "ship brief missing the imported engineering-craft entry for $skill"
+  done <<'SKILLS'
+architect
+tdd
+how
+teach
+create-verification-skill
+why
+interrogate
+arena
+technical-writing
+unslop
+figure-it-out
+maintain-verification-skill
+bro
+typescript-best-practices
+SKILLS
   assert_grep "$ROOT/.agents/skills/blast-radius/SKILL.md" "$brief" \
     "ship brief missing the conditional blast-radius pointer"
   assert_grep "touches shared state, locks, or wake handling" "$brief" \
     "ship brief missing the blast-radius trigger condition"
   assert_grep "within the accepted task contract" "$brief" \
     "ship brief missing the never-block-on-the-human authority boundary"
+  brief_words=$(wc -w < "$brief")
+  catalog_words=$(wc -w < "$ROOT/bin/fm-brief-engineering-craft.generated.md")
+  max_words=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["index"]["brief_budget"]["max_words"])' "$ROOT/bin/fm-pstack-sync.lock.json")
+  catalog_max_words=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["index"]["brief_budget"]["catalog_max_words"])' "$ROOT/bin/fm-pstack-sync.lock.json")
+  [ "$brief_words" -le "$max_words" ] || fail "generated brief exceeded its documented word budget ($brief_words > $max_words)"
+  [ "$catalog_words" -le "$catalog_max_words" ] || fail "generated catalog exceeded its documented word budget ($catalog_words > $catalog_max_words)"
+  full_skill_words=$(find "$ROOT/.agents/skills"/{architect,tdd,how,teach,create-verification-skill,why,interrogate,arena,technical-writing,unslop,figure-it-out,maintain-verification-skill,bro,typescript-best-practices} -type f -name '*.md' -print0 | xargs -0 wc -w | tail -1 | awk '{print $1}')
+  [ "$brief_words" -lt "$full_skill_words" ] || fail "brief appears to contain full imported skill bodies ($brief_words >= $full_skill_words)"
+  pass "fm-brief.sh: imported catalog is compact and full skill bodies stay lazy"
   pass "fm-brief.sh: ship briefs carry the engineering-craft index and blast-radius trigger"
 }
 

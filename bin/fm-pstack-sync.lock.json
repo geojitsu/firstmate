@@ -1,0 +1,172 @@
+{
+  "schema": 1,
+  "upstream": {
+    "repository": "https://github.com/cursor/plugins.git",
+    "commit": "fd6dd6f7276956a532bb78a748a8d2818b6eb5f4",
+    "source_root": "pstack"
+  },
+  "allowlist": [
+    { "name": "architect", "tier": 2, "source": "skills/architect", "include": ["SKILL.md", "references/**"] },
+    { "name": "tdd", "tier": 2, "source": "skills/tdd", "include": ["SKILL.md"] },
+    { "name": "how", "tier": 2, "source": "skills/how", "include": ["SKILL.md", "references/**"] },
+    { "name": "teach", "tier": 2, "source": "skills/teach", "include": ["SKILL.md"] },
+    { "name": "create-verification-skill", "tier": 2, "source": "skills/create-verification-skill", "include": ["SKILL.md", "references/**"] },
+    { "name": "why", "tier": 3, "source": "skills/why", "include": ["SKILL.md", "references/**"] },
+    { "name": "interrogate", "tier": 3, "source": "skills/interrogate", "include": ["SKILL.md", "references/**"] },
+    { "name": "arena", "tier": 3, "source": "skills/arena", "include": ["SKILL.md"] },
+    { "name": "technical-writing", "tier": 3, "source": "skills/technical-writing", "include": ["SKILL.md"] },
+    { "name": "unslop", "tier": 3, "source": "skills/unslop", "include": ["SKILL.md"] },
+    { "name": "figure-it-out", "tier": "leaf", "source": "skills/figure-it-out", "include": ["SKILL.md"] },
+    { "name": "maintain-verification-skill", "tier": "leaf", "source": "skills/maintain-verification-skill", "include": ["SKILL.md"] },
+    { "name": "bro", "tier": "leaf", "source": "skills/bro", "include": ["SKILL.md"] },
+    { "name": "typescript-best-practices", "tier": "leaf", "source": "skills/typescript-best-practices", "include": ["SKILL.md", "references/**"] }
+  ],
+  "excluded_components": [
+    "poteto-mode",
+    "setup-pstack",
+    "orch",
+    "watch-pr",
+    "worktree-audit.sh",
+    "automate-me",
+    "recall",
+    "automations/benny",
+    "Graphite-specific playbooks",
+    "Cursor cloud-agent routing",
+    "swarm",
+    "reflect",
+    "show-me-your-work",
+    "no-comments",
+    "principle-* (already owned by Firstmate)",
+    "blast-radius (already owned by Firstmate)"
+  ],
+  "frontmatter": {
+    "remove_keys": [
+      "disable-model-invocation",
+      "model",
+      "mode",
+      "environment",
+      "command",
+      "commands"
+    ],
+    "set": {
+      "user-invocable": false,
+      "metadata.internal": true
+    }
+  },
+  "compatibility": {
+    "boundary": "This is a worker-directed Firstmate skill. Use it only within the accepted task contract. Firstmate owns dispatch, delivery, no-mistakes, isolated worktrees, decision holds, and captain authority. Any suggested parallel worker or reviewer is advisory until Firstmate routes it through the approved dispatch path; never use vendor-specific hidden delegation, cloud agents, or an unapproved model runner.",
+    "skill_notes": {
+      "architect": "Architectural alternatives may be requested through Firstmate's approved dispatch path, with one isolated worktree per writer. If no such dispatch is available, compare bounded advisory sketches in the current worker.",
+      "how": "For complex explanations, optional explorers and synthesis are advisory worker roles. Route them through Firstmate's normal dispatch path when used, and keep the current worker able to answer without hidden delegation.",
+      "why": "Query only evidence tools actually available in this Firstmate environment. Use git and gh-axi for GitHub history, report unavailable categories as gaps, and never imply that an absent MCP or source was searched.",
+      "arena": "Candidate fan-out is optional and worker-directed. If used, request isolated candidates through Firstmate's approved dispatch path and never create a second swarm, PR, or CI control plane.",
+      "interrogate": "Adversarial findings are a review artifact only. Do not auto-apply them, merge a PR, or bypass no-mistakes. Route any needed change through the current worker and Firstmate's delivery authority.",
+      "create-verification-skill": "Use the project's actual browser, CLI, or HTTP conventions. Firstmate uses chrome-devtools-axi for browser work, gh-axi for GitHub, and lavish-axi for structured reports. There is no supported iOS or simulator recipe in this skill; record that bounded limitation instead of inventing tooling.",
+      "figure-it-out": "Replace the upstream entry point with the relevant Firstmate principles and the task's own brief. Firstmate's accepted intent, escalation, decision-hold, and delivery contracts remain controlling.",
+      "maintain-verification-skill": "Ship proven verification-skill corrections only through Firstmate's configured delivery path. Never merge or create an independent review control plane."
+    }
+  },
+  "replacements": [
+    { "pattern": ".cursor/skills", "replacement": ".agents/skills" },
+    { "pattern": "gh pr ", "replacement": "gh-axi pr " },
+    { "pattern": "gh issue ", "replacement": "gh-axi issue " },
+    { "pattern": "~/.cursor/rules/pstack-models.mdc", "replacement": "Firstmate's configured dispatch profile; do not infer a runner from upstream defaults" },
+    { "pattern": "the Cursor environment", "replacement": "the Firstmate environment" },
+    { "pattern": "Cursor exposes", "replacement": "Firstmate exposes" },
+    { "pattern": "cursor exposes", "replacement": "Firstmate exposes" },
+    { "pattern": "control-notes browser", "replacement": "chrome-devtools-axi" },
+    { "pattern": "control-notes cli -- <command>", "replacement": "the project's CLI or PTY harness with <command>" },
+    { "pattern": "control-notes", "replacement": "chrome-devtools-axi" },
+    { "pattern": "Spawn all explorers in a single message:", "replacement": "If complexity warrants independent exploration, request isolated workers through Firstmate's normal dispatch path. Do not use hidden delegation." },
+    { "pattern": "Spawn a single Task subagent that explores and explains in one pass:", "replacement": "For a simple question, do one bounded pass in the current worker. If a separate worker is useful, request it through Firstmate's normal dispatch path." },
+    { "pattern": "spawn one architectural critic per model", "replacement": "request architectural critics through Firstmate's approved dispatch path" },
+    { "pattern": "Spawn one readonly judge worker on that model.", "replacement": "Request one read-only judge through Firstmate's approved dispatch path." },
+    { "pattern": "Spawn one readonly judge subagent on that model.", "replacement": "Request one read-only judge through Firstmate's approved dispatch path." },
+    { "pattern": "Spawn one reviewer per configured model", "replacement": "Request one reviewer per configured reasoning profile" },
+    { "pattern": "Spawn one investigator per category", "replacement": "Request one investigator per category through Firstmate's approved dispatch path" },
+    { "pattern": "Worker config (each):\n- `readonly`: `false` (agent mode). **Do not use readonly/Ask mode.** It strips MCP access, which disables MCP-backed investigators entirely. The source control investigator would be safe in readonly, but keep modes uniform. Investigators still shouldn't write anything. That's a posture, not a sandbox.\n", "replacement": "Worker config: use only the approved Firstmate route. Investigators remain read-only and do not write.\n" },
+    { "pattern": "For each reviewer:\n- `model`: the configured `interrogate reviewers` entry, or the table default with no configured line\n", "replacement": "Reviewers use the reasoning class selected by Firstmate's dispatch profile.\n" },
+    { "pattern": "spawn a single Task subagent", "replacement": "request one Firstmate worker" },
+    { "pattern": "Task subagent", "replacement": "Firstmate worker" },
+    { "pattern": "Subagent", "replacement": "Worker" },
+    { "pattern": "subagent", "replacement": "worker" },
+    { "pattern": "spawn multiple models", "replacement": "request multiple advisory perspectives through Firstmate's normal dispatch path" },
+    { "pattern": "spawn one synthesizer subagent", "replacement": "request one synthesizer through Firstmate's normal dispatch path" },
+    { "pattern": "Launch all reviewers in a single message using the Task tool.", "replacement": "If multi-perspective review is appropriate, request all reviewers through Firstmate's normal dispatch path." },
+    { "pattern": "Task tool", "replacement": "Firstmate dispatch" },
+    { "pattern": "run_in_background: true", "replacement": "parallel execution authorized by Firstmate" },
+    { "pattern": "`subagent_type`: `generalPurpose`\n", "replacement": "" },
+    { "pattern": "`readonly`: `true`\n", "replacement": "" },
+    { "pattern": "`readonly`: `false` (agent mode). **Do not use readonly/Ask mode.**", "replacement": "Use the approved Firstmate worker route when a live tool is needed." },
+    { "pattern": "`model`: your configured how-explorer model (default `grok-4.6-fast-xhigh`)\n", "replacement": "" },
+    { "pattern": "`model`: your configured how-explainer model (default `claude-fable-5-thinking-max`)\n", "replacement": "" },
+    { "pattern": "`model`: one model from your configured how-critics list. These are minimum reasoning levels. The lead should escalate any model when the architecture warrants deeper analysis.\n", "replacement": "" },
+    { "pattern": "`model`: the configured interrogate reviewers entry, or the table default with no configured line\n", "replacement": "" },
+    { "pattern": "`model`: your configured why-investigators model (default `grok-4.6-fast-xhigh`)\n", "replacement": "" },
+    { "pattern": "`model`: your configured why-synthesizer model (default `claude-fable-5-thinking-max`)\n", "replacement": "" },
+    { "pattern": "Use your configured architect runners (defaults to `claude-fable-5-thinking-max`, `gpt-5.6-sol-max`, `grok-4.6-fast-xhigh`, `claude-opus-5-thinking-xhigh`).", "replacement": "Use only the reasoning class and worker profile Firstmate approves for this task; do not copy upstream runner names." },
+    { "pattern": "Otherwise default to one each on `claude-fable-5-thinking-max`, `gpt-5.6-sol-max`, `grok-4.6-fast-xhigh`, `claude-opus-5-thinking-xhigh`.", "replacement": "Otherwise use the strongest reasoning class available through Firstmate's dispatch profile." },
+    { "pattern": "After all Phase B candidates complete, choose one model from the `arena cross-judge pool` in `~/.cursor/rules/pstack-models.mdc` when present. Otherwise default to one each on `claude-fable-5-thinking-max`, `gpt-5.6-sol-max`, `grok-4.6-fast-xhigh`, `claude-opus-5-thinking-xhigh`.", "replacement": "After all candidates complete, request one cross-judge through Firstmate's approved dispatch path when review pressure is useful." },
+    { "pattern": "`claude-fable-5-thinking-max`", "replacement": "the Firstmate-approved reasoning profile" },
+    { "pattern": "`gpt-5.6-sol-max`", "replacement": "the Firstmate-approved reasoning profile" },
+    { "pattern": "`grok-4.6-fast-xhigh`", "replacement": "the Firstmate-approved reasoning profile" },
+    { "pattern": "`claude-opus-5-thinking-xhigh`", "replacement": "the Firstmate-approved reasoning profile" },
+    { "pattern": "git and `gh` for PRs", "replacement": "git and gh-axi for PRs" },
+    { "pattern": "Git history, `gh` for PRs", "replacement": "Git history, gh-axi for PRs" },
+    { "pattern": "source control is always available through git and `gh`", "replacement": "source control is always available through git and gh-axi" },
+    { "pattern": "[PR #123](url)", "replacement": "PR #123 (url)" },
+    { "pattern": "Source control is always available through git and `gh`", "replacement": "Source control is always available through git and gh-axi" },
+    { "pattern": "`gh`", "replacement": "`gh-axi`" },
+    { "pattern": "It strips MCP access, which disables MCP-backed investigators entirely. The source control investigator would be safe in readonly, but keep modes uniform. Investigators still shouldn't write anything. That's a posture, not a sandbox.", "replacement": "Keep investigators read-only and use only tools available through Firstmate's approved route; they must not write anything." },
+    { "pattern": "show-me-your-work", "replacement": "the task report" },
+    { "pattern": "/tmp/arena-<slug>/candidate-<n>/", "replacement": "a Firstmate-managed isolated worktree for each candidate" },
+    { "pattern": "- - - \n", "replacement": "" },
+    { "pattern": "subagent_type", "replacement": "Firstmate worker route" },
+    { "pattern": "`readonly`: `false` (agent mode). The synthesizer's quality check spot-verifies citations, which can require MCP access. Readonly/Ask mode strips MCPs and defeats that.", "replacement": "The synthesizer may spot-verify citations only through tools available to the approved Firstmate worker route." },
+    { "pattern": "`.cursor/skills/verify-<app>/`", "replacement": "the project's own agent-skill directory, such as `.agents/skills/verify-<app>/`" },
+    { "pattern": "`.cursor/skills/verify-<app>/SKILL.md`", "replacement": "the project's own agent-skill directory's `verify-<app>/SKILL.md`" },
+    { "pattern": "`.cursor/skills/verify-<app>/features/README.md`", "replacement": "the project's own agent-skill directory's `verify-<app>/features/README.md`" },
+    { "pattern": "read the Principles section of the **poteto-mode** skill", "replacement": "read the relevant Firstmate principle skills named by the task brief" },
+    { "pattern": "the **poteto-mode** skill", "replacement": "the relevant Firstmate principle skills" },
+    { "pattern": "/poteto-mode", "replacement": "the relevant Firstmate skill" },
+    { "pattern": "poteto-mode", "replacement": "Firstmate's accepted-task procedures" }
+    ,{ "pattern": "only ask the user what you cannot observe", "replacement": "record what you cannot observe and route any captain-level decision through Firstmate" }
+    ,{ "pattern": "If you're unsure about the intent, ask the user before proceeding.", "replacement": "If the intent is unresolved, route the decision through Firstmate before proceeding." }
+    ,{ "pattern": "open a separate PR to update the configured value or default table.", "replacement": "report the configuration mismatch to Firstmate; do not alter dispatch configuration from this skill." }
+  ],
+  "post_replacements": [
+    { "pattern": "- - - ", "replacement": "" },
+    { "pattern": "- - ", "replacement": "- " },
+    { "pattern": "- `model`: the configured `interrogate reviewers` entry, or the table default with no configured line", "replacement": "Reviewers use the reasoning class selected by Firstmate's dispatch profile." },
+    { "pattern": "- - - \n", "replacement": "" },
+    { "pattern": "- - \n", "replacement": "" },
+    { "pattern": "- \n", "replacement": "" }
+  ],
+  "index": {
+    "path": "bin/fm-brief-engineering-craft.generated.md",
+    "preamble": [
+      "These agent-only skills provide compact engineering-craft guidance to crewmates.",
+      "Read the full leaf skill under `__FM_ROOT__/.agents/skills/<name>/SKILL.md` only when its trigger applies.",
+      "The imported Tier 2 and Tier 3 skills are worker-directed references. Firstmate's delivery authority, no-mistakes ownership, isolated-worker rules, decision holds, and captain authority remain controlling."
+    ],
+    "groups": [
+      { "title": "Core", "skills": ["principle-laziness-protocol", "principle-foundational-thinking", "principle-redesign-from-first-principles", "principle-subtract-before-you-add", "principle-minimize-reader-load", "principle-outcome-oriented-execution", "principle-experience-first", "principle-exhaust-the-design-space", "principle-build-the-lever"] },
+      { "title": "Architecture", "skills": ["principle-model-the-domain", "principle-boundary-discipline", "principle-type-system-discipline", "principle-make-operations-idempotent", "principle-migrate-callers-then-delete-legacy-apis", "principle-separate-before-serializing-shared-state"] },
+      { "title": "Verification", "skills": ["principle-prove-it-works", "principle-fix-root-causes", "principle-sequence-verifiable-units"] },
+      { "title": "Delegation", "skills": ["principle-guard-the-context-window", "principle-never-block-on-the-human"] },
+      { "title": "Meta", "skills": ["principle-encode-lessons-in-structure"] },
+      { "title": "Tier 2", "skills": ["architect", "tdd", "how", "teach", "create-verification-skill"] },
+      { "title": "Tier 3", "skills": ["why", "interrogate", "arena", "technical-writing", "unslop"] },
+      { "title": "Portable leaves", "skills": ["figure-it-out", "maintain-verification-skill", "bro", "typescript-best-practices"] }
+    ],
+    "footer": [
+      "Load `__FM_ROOT__/.agents/skills/blast-radius/SKILL.md` only when a task touches shared state, locks, or wake handling and prove the critical safety fact with real code.",
+      "Apply `principle-never-block-on-the-human` only within accepted task intent; Firstmate owns captain decisions, destructive actions, security-sensitive work, and product-contract expansion."
+    ],
+    "brief_budget": {
+      "baseline_words": 1762,
+      "max_words": 2800,
+      "catalog_max_words": 1500
+    }
+  }
+}
