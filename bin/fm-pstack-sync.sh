@@ -238,7 +238,45 @@ def matches(path: str, pattern: str) -> bool:
     return fnmatch.fnmatchcase(path, pattern)
 
 
-def replacement_text(text: str, config: dict) -> str:
+SKILL_TOKEN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+SKILL_REFERENCE = re.compile(
+    rf"\*\*(?P<bold>{SKILL_TOKEN})\*\*"
+    rf"|(?P<per>\bper\s+)(?P<plain>{SKILL_TOKEN})(?=\b)"
+)
+
+
+def principle_aliases(config: dict) -> dict[str, str]:
+    imported = {entry["name"] for entry in config["allowlist"]}
+    skills_root = ROOT / ".agents" / "skills"
+    local = {
+        path.name
+        for path in (skills_root.iterdir() if skills_root.is_dir() else ())
+        if path.is_dir() and (path / "SKILL.md").is_file()
+    }
+    aliases = {}
+    for skill in sorted(local):
+        if not skill.startswith("principle-"):
+            continue
+        original = skill.removeprefix("principle-")
+        if original not in imported and original not in local:
+            aliases[original] = skill
+    return aliases
+
+
+def rewrite_skill_references(text: str, aliases: dict[str, str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        name = match.group("bold") or match.group("plain")
+        replacement = aliases.get(name)
+        if replacement is None:
+            return match.group(0)
+        if match.group("bold") is not None:
+            return f"**{replacement}**"
+        return f"{match.group('per')}{replacement}"
+
+    return SKILL_REFERENCE.sub(replace, text)
+
+
+def replacement_text(text: str, config: dict, aliases: dict[str, str]) -> str:
     replacements = sorted(config.get("replacements", []), key=lambda item: len(item.get("pattern", "")), reverse=True)
     for item in replacements:
         pattern = item.get("pattern")
@@ -247,7 +285,7 @@ def replacement_text(text: str, config: dict) -> str:
         text = text.replace(pattern, item["replacement"])
     for item in config.get("post_replacements", []):
         text = text.replace(item["pattern"], item["replacement"])
-    return text
+    return rewrite_skill_references(text, aliases)
 
 
 def insert_boundary(body: str, skill: str, config: dict) -> str:
@@ -266,18 +304,24 @@ def insert_boundary(body: str, skill: str, config: dict) -> str:
         insert_at += 1
     result = lines[:insert_at] + [""] + block + lines[insert_at:]
     return "\n".join(result).rstrip() + "\n"
-def transformed(path: Path, relative: str, skill: str, config: dict) -> tuple[bytes, str | None]:
+def transformed(
+    path: Path,
+    relative: str,
+    skill: str,
+    config: dict,
+    aliases: dict[str, str],
+) -> tuple[bytes, str | None]:
     text = path.read_text(encoding="utf-8")
     metadata = None
     if relative == "SKILL.md":
         metadata, body = frontmatter(text)
-        body = replacement_text(body, config)
+        body = replacement_text(body, config, aliases)
         body = insert_boundary(body, skill, config)
         policy = config["frontmatter"]
         removed = set(policy["remove_keys"])
         cleaned = {key: value for key, value in metadata.items() if key not in removed}
-        cleaned["name"] = replacement_text(cleaned["name"], config)
-        cleaned["description"] = replacement_text(cleaned["description"], config)
+        cleaned["name"] = replacement_text(cleaned["name"], config, aliases)
+        cleaned["description"] = replacement_text(cleaned["description"], config, aliases)
         description = cleaned["description"]
         frontmatter_lines = [
             "---",
@@ -303,7 +347,7 @@ def transformed(path: Path, relative: str, skill: str, config: dict) -> tuple[by
         ])
         output = "\n".join(frontmatter_lines) + body
     else:
-        output = replacement_text(text, config)
+        output = replacement_text(text, config, aliases)
     forbidden = (
         "Cursor Task",
         "subagent_type",
@@ -325,6 +369,7 @@ def expected_outputs(source: Path, config: dict) -> tuple[dict[Path, bytes], dic
         fail(f"source root is missing: {source_root}")
     outputs: dict[Path, bytes] = {}
     descriptions: dict[str, str] = {}
+    aliases = principle_aliases(config)
     for entry in config["allowlist"]:
         skill = entry["name"]
         origin = source_root / entry["source"]
@@ -341,7 +386,7 @@ def expected_outputs(source: Path, config: dict) -> tuple[dict[Path, bytes], dic
         if not any(relative == "SKILL.md" for relative, _ in files):
             fail(f"allowlisted skill has no SKILL.md: {skill}")
         for relative, path in sorted(files):
-            content, description = transformed(path, relative, skill, config)
+            content, description = transformed(path, relative, skill, config, aliases)
             target = destination / relative
             outputs[target] = content
             if relative == "SKILL.md":

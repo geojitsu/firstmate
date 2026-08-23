@@ -266,6 +266,7 @@ Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committe
 The current source is `https://github.com/cursor/plugins` at commit `fd6dd6f7276956a532bb78a748a8d2818b6eb5f4`.
 The allowlist imports Tier 2 `architect`, `tdd`, `how`, `teach`, and `create-verification-skill`, Tier 3 `why`, `interrogate`, `arena`, `technical-writing`, and `unslop`, plus the standalone leaves `figure-it-out`, `maintain-verification-skill`, `bro`, and `typescript-best-practices`.
 The importer excludes Cursor-only modes and routing, `poteto-mode`, `setup-pstack`, `orch`, `watch-pr`, `worktree-audit.sh`, `automate-me`, `recall`, `automations/benny`, Graphite playbooks, swarm-only control, and principles already owned by Firstmate.
+Imported prose that names a bare upstream principle (`**prove-it-works**`, `per boundary-discipline`) is rewritten at import time to the matching local `principle-*` skill name; aliases are derived from the allowlist and the on-disk `principle-*` skills, so a newly added principle skill is covered without a sync-script change.
 Run `bin/fm-pstack-sync.sh --check` to fetch the pinned upstream commit and verify the committed generated skills and catalog against it.
 Run `bin/fm-pstack-sync.sh --check --source <verified-checkout>` to verify the same generated outputs without network access, using an already-verified local checkout instead of fetching.
 Run `bin/fm-pstack-sync.sh --source <verified-checkout>` for an offline pinned import, or run it without `--source` to fetch the exact lock commit into a temporary checkout.
@@ -275,7 +276,7 @@ Ordinary worker intake reads the committed local skills and never requires sourc
 `bin/fm-brief.sh` reads `bin/fm-brief-engineering-craft.generated.md` and inlines it into both ship and scout briefs, so those briefs carry only the compact trigger catalog and load full skill bodies lazily.
 A secondmate charter is a standing role definition rather than a one-shot task, so it points at that generated catalog's path instead of inlining it, and loads it fresh on each routed investigation.
 The documented budget is 2,800 words for a generated ship brief and 1,500 words for the catalog, compared with the 1,762-word pre-import brief; the regression check also proves imported bodies are not injected.
-Run `bin/fm-test-run.sh tests/fm-pstack-sync.test.sh tests/fm-brief.test.sh` to verify pinning, exclusions, frontmatter conversion, idempotence, conflict handling, generated wiring, and the token budget.
+Run `bin/fm-test-run.sh tests/fm-pstack-sync.test.sh tests/fm-brief.test.sh` to verify pinning, exclusions, frontmatter conversion, idempotence, conflict handling, generated wiring, principle skill reference resolution, and the token budget.
 Imported review or candidate fan-out remains optional and worker-directed through Firstmate dispatch; it never creates automatic adversarial review, a parallel swarm, or a second PR/CI control plane.
 Firstmate's delivery authority, no-mistakes ownership, isolated-worker rules, decision holds, and captain authority override imported prose.
 

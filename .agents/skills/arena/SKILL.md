@@ -36,7 +36,7 @@ The N candidates will receive the same prompt, so the prompt is the contract. Ge
 1. State the artifact each candidate is producing.
 2. Derive the rubric. State what success looks like for *this* task, then turn it into 3-6 concrete gradeable criteria. Concrete: `Adds a --dry-run flag that skips writes`. Vague: `code is correct`. The rubric is the picker's tool in Phase D; candidates only see the task.
 3. Pick the runners. Use `arena runners` from `Firstmate's configured dispatch profile; do not infer a runner from upstream defaults` when present. Otherwise use the strongest reasoning class available through Firstmate's dispatch profile. Spawn more when the arena covers multiple design directions. Same model N times when the work is generation-bound rather than judgment-sensitive.
-4. Assign output paths. Each candidate writes to its own location (a git worktree where possible, otherwise `a Firstmate-managed isolated worktree for each candidate`). N candidates writing to the same path is shared mutable state and fails the the **separate-before-serializing-shared-state** principle skill test.
+4. Assign output paths. Each candidate writes to its own location (a git worktree where possible, otherwise `a Firstmate-managed isolated worktree for each candidate`). N candidates writing to the same path is shared mutable state and fails the the **principle-separate-before-serializing-shared-state** principle skill test.
 
 ## Phase B: Fan out
 
@@ -64,7 +64,7 @@ Record the pick and the reason in a short synthesis note alongside the base arti
 
 Walk each losing candidate once more and identify what is worth porting into the base. The signal is usually one or two things per candidate, not most of it.
 
-Fold each graft in by hand, per the **redesign-from-first-principles** principle skill. Don't paste mechanically. The result has to remain coherent under one mental model.
+Fold each graft in by hand, per the **principle-redesign-from-first-principles** principle skill. Don't paste mechanically. The result has to remain coherent under one mental model.
 
 Record what was grafted, from which candidate, and what was rejected and why. The rejection notes are the highest-signal part of the record. Future readers learn from what you considered and dropped, not just what you kept.
 
@@ -72,7 +72,7 @@ When N candidates converge on the same shape, that is a strong agreement signal.
 
 ## Phase F: Verify
 
-The synthesized artifact has to hold up under the same scrutiny as any other output, per the **prove-it-works** principle skill. The arena does not earn you a pass.
+The synthesized artifact has to hold up under the same scrutiny as any other output, per the **principle-prove-it-works** principle skill. The arena does not earn you a pass.
 
 If verification surfaces a problem the arena did not catch, either Phase A was wrong (re-frame and re-run) or one candidate caught it and you missed the graft (go back to Phase E). Don't paper over.
 
