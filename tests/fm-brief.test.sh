@@ -810,8 +810,8 @@ test_scout_and_secondmate_load_decision_hold_policy() {
 
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
-  local brief
-  FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-scout-q6 alpha --scout >/dev/null 2>&1 \
+  local brief charter
+  FM_HOME="$BRIEF_HOME" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" brief-scout-q6 alpha --scout >/dev/null 2>&1 \
     || fail "fm-brief.sh scout scaffold exited non-zero"
   brief="$BRIEF_HOME/data/brief-scout-q6/brief.md"
   assert_present "$brief" "scout brief was not scaffolded"
@@ -819,6 +819,12 @@ test_scout_and_secondmate_scaffold() {
   assert_grep "report.md" "$brief" "scout brief must point at the report deliverable"
   assert_grep "you may host the Lavish review loop yourself" "$brief" \
     "scout brief must mention the option to host a Lavish review loop"
+  assert_grep "# Engineering craft" "$brief" \
+    "scout brief must carry the engineering-craft catalog"
+  assert_grep "principle-fix-root-causes" "$brief" \
+    "scout brief must carry debugging craft guidance"
+  assert_grep "$ROOT/.agents/skills/<name>/SKILL.md" "$brief" \
+    "scout brief must substitute the engineering-craft root path"
 
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-sm-q6 --secondmate alpha >/dev/null 2>&1 \
@@ -827,6 +833,11 @@ test_scout_and_secondmate_scaffold() {
   assert_present "$brief" "secondmate charter was not scaffolded"
   assert_grep "persistent second mate" "$brief" \
     "secondmate charter must declare its role"
+  charter="$brief"
+  assert_grep "$ROOT/bin/fm-brief-engineering-craft.generated.md" "$charter" \
+    "secondmate charter must point at the shared engineering-craft catalog"
+  assert_grep "standing role definition" "$charter" \
+    "secondmate charter must explain why it points at rather than inlines the catalog"
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 

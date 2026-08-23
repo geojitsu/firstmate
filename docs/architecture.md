@@ -260,7 +260,7 @@ The helper requires a full `https://github.com/<owner>/<repo>/pull/<n>` URL, inv
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
 
-## Engineering-craft skills in ship briefs
+## Engineering-craft skills in briefs
 
 `bin/fm-pstack-sync.lock.json` is the single machine-readable owner of the upstream repository, commit pin, allowlist, exclusions, frontmatter policy, compatibility substitutions, and brief budget.
 The current source is `https://github.com/cursor/plugins` at commit `fd6dd6f7276956a532bb78a748a8d2818b6eb5f4`.
@@ -272,7 +272,8 @@ Run `bin/fm-pstack-sync.sh --source <verified-checkout>` for an offline pinned i
 The importer never deletes omitted skills and stops on divergent generated output; review the diff and use `--accept-reviewed` only after accepting a deliberate adaptation.
 Rollback is a git revert of the single import commit or PR, which removes the lock, importer, generated catalog, and imported skill tree together.
 Ordinary worker intake reads the committed local skills and never requires source acquisition or network access merely to load a principle.
-`bin/fm-brief.sh` reads `bin/fm-brief-engineering-craft.generated.md`, so briefs carry only the compact trigger catalog and load full skill bodies lazily.
+`bin/fm-brief.sh` reads `bin/fm-brief-engineering-craft.generated.md` and inlines it into both ship and scout briefs, so those briefs carry only the compact trigger catalog and load full skill bodies lazily.
+A secondmate charter is a standing role definition rather than a one-shot task, so it points at that generated catalog's path instead of inlining it, and loads it fresh on each routed investigation.
 The documented budget is 2,800 words for a generated ship brief and 1,500 words for the catalog, compared with the 1,762-word pre-import brief; the regression check also proves imported bodies are not injected.
 Run `bin/fm-test-run.sh tests/fm-pstack-sync.test.sh tests/fm-brief.test.sh` to verify pinning, exclusions, frontmatter conversion, idempotence, conflict handling, generated wiring, and the token budget.
 Imported review or candidate fan-out remains optional and worker-directed through Firstmate dispatch; it never creates automatic adversarial review, a parallel swarm, or a second PR/CI control plane.

@@ -5,7 +5,9 @@
 #          BOOTSTRAP_INFO no-action fact for completed benign bootstrap work, and
 #          exits 0.
 #          Silent = all good.
-#          Lines: "MISSING: <tool> (install: <command>)",
+#          Lines: "MISSING: <tool> (install: <command>)" when absent, or
+#                 "MISSING: <tool> (installed: <version>; required: <floor>;
+#                 upgrade: <command>)" when present but incompatible,
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
@@ -49,13 +51,15 @@
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
 #          treehouse is also MISSING when its installed version lacks
-#          "treehouse get --lease" support.
+#          "treehouse get --lease" support; the diagnostic names the installed
+#          version and the required 2.0.1 floor.
 #          no-mistakes is also MISSING when its installed version is older than
-#          1.31.2.
+#          1.31.2, with the installed and required versions in the diagnostic.
 #          The AXI-family floor policy is owned beside GH_AXI_MIN and
 #          LAVISH_AXI_MIN below; the per-tool owners point there. An installed
-#          build below its floor reports MISSING like no-mistakes, so the operator
-#          is asked to upgrade rather than silently running an older tool.
+#          build below its floor reports MISSING with its installed and required
+#          versions, so the operator is asked to upgrade rather than silently
+#          running an older tool.
 #          tasks-axi feature probes remain a separate defense-in-depth check.
 #          tasks-axi and quota-axi are required bootstrap tools (same class as
 #          lavish-axi). A compatible tasks-axi default backend is silent.
@@ -793,6 +797,8 @@ if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
 fi
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 NO_MISTAKES_MIN=1.31.2
+# Treehouse 2.0.1 is the lease-capable release pinned by fm-install-treehouse.sh.
+TREEHOUSE_MIN=2.0.1
 # AXI-FAMILY FLOOR POLICY. Every axi-family floor is the CURRENT LATEST published
 # version of that tool, captain-bumped periodically to keep the whole fleet on the
 # newest axi tools. It is NOT the minimum feature-introduced version. These floors
@@ -826,6 +832,26 @@ tool_version_at_least() {  # <tool> <min-version>
   [ "$minor" -gt "$min_minor" ] && return 0
   [ "$minor" -eq "$min_minor" ] || return 1
   [ "$patch" -ge "$min_patch" ]
+}
+
+tool_version_label() {  # <tool>
+  local tool=$1 output version
+  output=$("$tool" --version 2>/dev/null || true)
+  version=$(printf '%s\n' "$output" |
+    sed -nE 's/.*[vV]?([0-9]+)\.([0-9]+)\.([0-9]+).*/\1.\2.\3/p' |
+    head -n 1)
+  if [ -n "$version" ]; then
+    printf '%s\n' "$version"
+    return 0
+  fi
+  output=$(printf '%s\n' "$output" | sed -n '1p' | tr -d '\r')
+  printf '%s\n' "${output:-unknown}"
+}
+
+version_floor_diagnostic() {  # <tool> <required-version>
+  local tool=$1 required=$2 installed
+  installed=$(tool_version_label "$tool")
+  echo "MISSING: $tool (installed: $installed; required: $required; upgrade: $(install_cmd "$tool"))"
 }
 
 x_mode_write_if_changed() {
@@ -1141,22 +1167,22 @@ detect_local_tools() {
   # own worktrees); an orca home must not be told to upgrade a provider it never uses.
   if fm_backend_list_contains "$TOOLS" treehouse \
     && command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
-    echo "MISSING: treehouse (install: $(install_cmd treehouse))"
+    version_floor_diagnostic treehouse "$TREEHOUSE_MIN"
   fi
   if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then
-    echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
+    version_floor_diagnostic no-mistakes "$NO_MISTAKES_MIN"
   fi
   if command -v gh-axi >/dev/null 2>&1 && ! tool_version_at_least gh-axi "$GH_AXI_MIN"; then
-    echo "MISSING: gh-axi (install: $(install_cmd gh-axi))"
+    version_floor_diagnostic gh-axi "$GH_AXI_MIN"
   fi
   if command -v lavish-axi >/dev/null 2>&1 && ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
-    echo "MISSING: lavish-axi (install: $(install_cmd lavish-axi))"
+    version_floor_diagnostic lavish-axi "$LAVISH_AXI_MIN"
   fi
   if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
-    echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
+    version_floor_diagnostic quota-axi "$FM_QUOTA_AXI_MIN"
   fi
   if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
-    echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
+    version_floor_diagnostic tasks-axi "$FM_TASKS_AXI_MIN"
   fi
 }
 

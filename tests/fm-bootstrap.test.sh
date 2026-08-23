@@ -6,7 +6,9 @@
 # all is well. firstmate consumes the exact 'MISSING: treehouse (install: ...)',
 # 'MISSING: tasks-axi (install: ...)', 'MISSING: quota-axi (install: ...)',
 # 'MISSING: gh-axi (install: ...)', 'MISSING: lavish-axi (install: ...)', and
-# 'BOOTSTRAP_INFO: ...' lines, so those contracts are pinned verbatim. The cases
+# 'BOOTSTRAP_INFO: ...' lines, so absent-tool contracts are pinned verbatim.
+# Installed tools below their version or feature floor include their installed
+# version and required floor in the same MISSING line. The cases
 # are table-driven over the inputs that vary: whether `treehouse get --help`
 # advertises --lease, which (if any) tasks-axi version is on PATH, whether
 # tasks-axi update advertises --archive-body, whether its mv help advertises
@@ -71,6 +73,10 @@ if [ "${1:-}" = get ] && [ "${2:-}" = --help ]; then
   else
     printf '%s\n' 'Usage: treehouse get'
   fi
+  exit 0
+fi
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' "${FM_FAKE_TREEHOUSE_VERSION:-2.0.1}"
   exit 0
 fi
 exit 0
@@ -283,7 +289,7 @@ test_bootstrap_reporting() {
     # it stays inert: this suite pins tool detection, not the tangle guard, and the
     # ambient checkout (CI runs on a feature branch) must not leak a TANGLE line in.
     out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP="$lease" "$ROOT/bin/fm-bootstrap.sh")
+      FM_FAKE_TREEHOUSE_LEASE_HELP="$lease" FM_FAKE_TREEHOUSE_VERSION=2.0.0 "$ROOT/bin/fm-bootstrap.sh")
     case "$mode" in
       empty)
         [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
@@ -298,12 +304,12 @@ test_bootstrap_reporting() {
     esac
   done <<'ROWS'
 treehouse --lease support is accepted silently^1^0.2.4^1^manual^empty^^
-treehouse without --lease reports an upgrade, gh auth is fine^0^0.2.4^1^-^grep^MISSING: treehouse (install: curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh)^NEEDS_GH_AUTH
+treehouse without --lease reports an upgrade, gh auth is fine^0^0.2.4^1^-^grep^MISSING: treehouse (installed: 2.0.0; required: 2.0.1; upgrade: curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh)^NEEDS_GH_AUTH
 compatible tasks-axi is silent by default^1^0.2.4^1^-^empty^^
 missing tasks-axi is required by default^1^-^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
-incompatible tasks-axi is required by default^1^0.1.0^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
-tasks-axi without archive-body is required by default^1^0.2.4:noarchive^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
-tasks-axi without multi-id mv is required by default^1^0.2.4:nomulti^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
+incompatible tasks-axi is required by default^1^0.1.0^1^-^exact^MISSING: tasks-axi (installed: 0.1.0; required: 0.2.4; upgrade: npm install -g tasks-axi)^
+tasks-axi without archive-body is required by default^1^0.2.4:noarchive^1^-^exact^MISSING: tasks-axi (installed: 0.2.4; required: 0.2.4; upgrade: npm install -g tasks-axi)^
+tasks-axi without multi-id mv is required by default^1^0.2.4:nomulti^1^-^exact^MISSING: tasks-axi (installed: 0.2.4; required: 0.2.4; upgrade: npm install -g tasks-axi)^
 missing quota-axi is required by default^1^0.2.4^0^manual^exact^MISSING: quota-axi (install: npm install -g quota-axi)^
 manual backlog backend still requires missing tasks-axi^1^-^1^manual^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
 manual backlog backend suppresses tasks-axi availability^1^0.2.4^1^manual^empty^^
@@ -312,10 +318,9 @@ ROWS
 }
 
 test_no_mistakes_min_version() {
-  local label version mode case_dir fakebin out missing n
-  missing='MISSING: no-mistakes (install: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)'
+  local label version mode installed case_dir fakebin out expected n
   n=0
-  while IFS='^' read -r label version mode; do
+  while IFS='^' read -r label version mode installed; do
     [ -n "$label" ] || continue
     n=$((n + 1))
     case_dir="$TMP_ROOT/no-mistakes-$n"
@@ -329,23 +334,23 @@ test_no_mistakes_min_version() {
       empty)
         [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
       missing)
-        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+        expected="MISSING: no-mistakes (installed: $installed; required: 1.31.2; upgrade: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)"
+        [ "$out" = "$expected" ] || fail "$label: expected '$expected', got: $out" ;;
     esac
   done <<'ROWS'
 minimum no-mistakes version is accepted^no-mistakes version v1.31.2 (fake)^empty
 newer no-mistakes minor is accepted^no-mistakes version v1.32.0 (fake)^empty
 newer no-mistakes major is accepted^no-mistakes version v2.0.0 (fake)^empty
-older no-mistakes patch reports an upgrade^no-mistakes version v1.31.1 (fake)^missing
-unparseable no-mistakes version reports an upgrade^no-mistakes development build^missing
+older no-mistakes patch reports an upgrade^no-mistakes version v1.31.1 (fake)^missing^1.31.1
+unparseable no-mistakes version reports an upgrade^no-mistakes development build^missing^no-mistakes development build
 ROWS
   pass "bootstrap enforces no-mistakes minimum version"
 }
 
 test_gh_axi_min_version() {
-  local label version mode case_dir fakebin out missing n
-  missing='MISSING: gh-axi (install: npm install -g gh-axi && gh-axi setup hooks)'
+  local label version mode installed case_dir fakebin out expected n
   n=0
-  while IFS='^' read -r label version mode; do
+  while IFS='^' read -r label version mode installed; do
     [ -n "$label" ] || continue
     n=$((n + 1))
     case_dir="$TMP_ROOT/gh-axi-$n"
@@ -358,25 +363,25 @@ test_gh_axi_min_version() {
       empty)
         [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
       missing)
-        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+        expected="MISSING: gh-axi (installed: $installed; required: 0.1.29; upgrade: npm install -g gh-axi && gh-axi setup hooks)"
+        [ "$out" = "$expected" ] || fail "$label: expected '$expected', got: $out" ;;
     esac
   done <<'ROWS'
 minimum gh-axi version is accepted^0.1.29^empty
 newer gh-axi patch is accepted^0.1.30^empty
 newer gh-axi minor is accepted^0.2.0^empty
 newer gh-axi major is accepted^1.0.0^empty
-older gh-axi patch reports an upgrade^0.1.19^missing
-much older gh-axi minor reports an upgrade^0.0.9^missing
-unparseable gh-axi version reports an upgrade^gh-axi development build^missing
+older gh-axi patch reports an upgrade^0.1.19^missing^0.1.19
+much older gh-axi minor reports an upgrade^0.0.9^missing^0.0.9
+unparseable gh-axi version reports an upgrade^gh-axi development build^missing^gh-axi development build
 ROWS
   pass "bootstrap enforces gh-axi minimum version"
 }
 
 test_lavish_axi_min_version() {
-  local label version mode case_dir fakebin out missing n
-  missing='MISSING: lavish-axi (install: npm install -g lavish-axi && lavish-axi setup hooks)'
+  local label version mode installed case_dir fakebin out expected n
   n=0
-  while IFS='^' read -r label version mode; do
+  while IFS='^' read -r label version mode installed; do
     [ -n "$label" ] || continue
     n=$((n + 1))
     case_dir="$TMP_ROOT/lavish-axi-$n"
@@ -389,25 +394,25 @@ test_lavish_axi_min_version() {
       empty)
         [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
       missing)
-        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+        expected="MISSING: lavish-axi (installed: $installed; required: 0.1.46; upgrade: npm install -g lavish-axi && lavish-axi setup hooks)"
+        [ "$out" = "$expected" ] || fail "$label: expected '$expected', got: $out" ;;
     esac
   done <<'ROWS'
 minimum lavish-axi version is accepted^0.1.46^empty
 newer lavish-axi patch is accepted^0.1.47^empty
 newer lavish-axi minor is accepted^0.2.0^empty
 newer lavish-axi major is accepted^1.0.0^empty
-the patch just below the floor reports an upgrade^0.1.45^missing
-much older lavish-axi minor reports an upgrade^0.0.9^missing
-unparseable lavish-axi version reports an upgrade^lavish-axi development build^missing
+the patch just below the floor reports an upgrade^0.1.45^missing^0.1.45
+much older lavish-axi minor reports an upgrade^0.0.9^missing^0.0.9
+unparseable lavish-axi version reports an upgrade^lavish-axi development build^missing^lavish-axi development build
 ROWS
   pass "bootstrap enforces lavish-axi minimum version"
 }
 
 test_tasks_axi_min_version() {
-  local label version mode case_dir fakebin out missing n archive_body multi_id
-  missing='MISSING: tasks-axi (install: npm install -g tasks-axi)'
+  local label version mode installed case_dir fakebin out expected n archive_body multi_id
   n=0
-  while IFS='^' read -r label version mode; do
+  while IFS='^' read -r label version mode installed; do
     [ -n "$label" ] || continue
     n=$((n + 1))
     case_dir="$TMP_ROOT/tasks-axi-$n"
@@ -435,18 +440,19 @@ test_tasks_axi_min_version() {
       empty)
         [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
       missing)
-        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+        expected="MISSING: tasks-axi (installed: $installed; required: 0.2.4; upgrade: npm install -g tasks-axi)"
+        [ "$out" = "$expected" ] || fail "$label: expected '$expected', got: $out" ;;
     esac
   done <<'ROWS'
 minimum tasks-axi version is accepted^0.2.4^empty
 newer tasks-axi patch is accepted^0.2.5^empty
 newer tasks-axi minor is accepted^0.3.0^empty
 newer tasks-axi major is accepted^1.0.0^empty
-older tasks-axi with features reports an upgrade^0.1.1^missing
-the patch just below the floor reports an upgrade^0.2.3^missing
-unparseable tasks-axi version reports an upgrade^tasks-axi development build^missing
-tasks-axi at floor without archive-body reports an upgrade^0.2.4:noarchive^missing
-tasks-axi at floor without multi-id reports an upgrade^0.2.4:nomulti^missing
+older tasks-axi with features reports an upgrade^0.1.1^missing^0.1.1
+the patch just below the floor reports an upgrade^0.2.3^missing^0.2.3
+unparseable tasks-axi version reports an upgrade^tasks-axi development build^missing^tasks-axi development build
+tasks-axi at floor without archive-body reports an upgrade^0.2.4:noarchive^missing^0.2.4
+tasks-axi at floor without multi-id reports an upgrade^0.2.4:nomulti^missing^0.2.4
 ROWS
   pass "bootstrap enforces tasks-axi minimum version"
 }
@@ -454,10 +460,9 @@ ROWS
 # These rows exercise the real bootstrap check with a fake quota-axi answering
 # --version: below the floor produces MISSING, while at or above is silent.
 test_quota_axi_min_version() {
-  local label version mode case_dir fakebin out missing n
-  missing='MISSING: quota-axi (install: npm install -g quota-axi)'
+  local label version mode installed case_dir fakebin out expected n
   n=0
-  while IFS='^' read -r label version mode; do
+  while IFS='^' read -r label version mode installed; do
     [ -n "$label" ] || continue
     n=$((n + 1))
     case_dir="$TMP_ROOT/quota-axi-$n"
@@ -470,16 +475,17 @@ test_quota_axi_min_version() {
       empty)
         [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
       missing)
-        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+        expected="MISSING: quota-axi (installed: $installed; required: 0.1.29; upgrade: npm install -g quota-axi)"
+        [ "$out" = "$expected" ] || fail "$label: expected '$expected', got: $out" ;;
     esac
   done <<'ROWS'
 minimum quota-axi version is accepted^0.1.29^empty
 newer quota-axi patch is accepted^0.1.30^empty
 newer quota-axi minor is accepted^0.2.0^empty
 newer quota-axi major is accepted^1.0.0^empty
-the patch just below the floor reports an upgrade^0.1.28^missing
-much older quota-axi minor reports an upgrade^0.0.9^missing
-unparseable quota-axi version reports an upgrade^quota-axi development build^missing
+the patch just below the floor reports an upgrade^0.1.28^missing^0.1.28
+much older quota-axi minor reports an upgrade^0.0.9^missing^0.0.9
+unparseable quota-axi version reports an upgrade^quota-axi development build^missing^quota-axi development build
 ROWS
   pass "bootstrap enforces quota-axi minimum version"
 }
@@ -1046,7 +1052,7 @@ SH
   : > "$log"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TASKS_AXI_LOG="$log" FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-  assert_contains "$out" "MISSING: tasks-axi (install:" "the unaided run did not probe tasks-axi"
+  assert_contains "$out" "MISSING: tasks-axi (installed:" "the unaided run did not report the installed tasks-axi version"
   assert_grep '--version' "$log" "the unaided run never ran the probe"
 
   # With it, the probe is skipped entirely and the handed-in verdict is used.
@@ -1062,7 +1068,7 @@ SH
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TASKS_AXI_LOG="$log" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
     FM_TASKS_AXI_COMPATIBLE=yes "$ROOT/bin/fm-bootstrap.sh")
-  assert_contains "$out" "MISSING: tasks-axi (install:" "a malformed handoff value was trusted"
+  assert_contains "$out" "MISSING: tasks-axi (installed:" "a malformed handoff value was trusted"
 
   # And the handoff never reaches a grandchild: bootstrap spawns agents, and a
   # verdict cached into an agent's environment would outlive the tool it describes.
