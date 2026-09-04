@@ -28,3 +28,10 @@ jobs:
     steps:
       - name: Verify no-mistakes signature and pipeline attestation
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+        with:
+          # `fm/fm-upstream-*` branches carry mechanical upstream-sync merges, not
+          # human-authored contributions, and this fork's local no-mistakes is not
+          # yet on the v1.46.0+ that writes the structured attestation. Exempt that
+          # structural-automation branch prefix; every real contributor PR still
+          # has to satisfy the full attestation contract.
+          exempt-head-branches: fm/fm-upstream-*

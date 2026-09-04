@@ -28,6 +28,14 @@ run_verifier() {
     python3 "$VERIFY" 2>&1
 }
 
+run_verifier_branch() {
+  local body=$1 head=$2 head_ref=$3 exempt_branches=$4
+  PR_BODY="$body" PR_HEAD_SHA="$head" PR_HEAD_REF="$head_ref" \
+    PR_AUTHOR=regression PR_NUMBER=3006 \
+    NM_EXEMPT_HEAD_BRANCHES="$exempt_branches" \
+    python3 "$VERIFY" 2>&1
+}
+
 test_matching_head_and_completed_steps_pass() {
   local body output rc
   body="$SIGNATURE
@@ -66,7 +74,32 @@ test_missing_head_fails() {
   pass "shared action rejects an attestation with no head_sha"
 }
 
+test_upstream_sync_branch_is_exempt() {
+  local output rc
+  rc=0
+  output=$(run_verifier_branch "no body at all" "$NEW_SHA" \
+    fm/fm-upstream-merge-003 'fm/fm-upstream-*') || rc=$?
+  expect_code 0 "$rc" \
+    "shared action gated an fm/fm-upstream-* sync branch that should be exempt"
+  assert_contains "$output" "Skipping no-mistakes enforcement" \
+    "exempt sync branch was not reported as skipped"
+  pass "shared action exempts an fm/fm-upstream-* head branch from the gate"
+}
+
+test_feature_branch_still_gated_with_exempt_pattern_set() {
+  local output rc
+  rc=0
+  output=$(run_verifier_branch "$SIGNATURE" "$NEW_SHA" \
+    fm/some-feature 'fm/fm-upstream-*') || rc=$?
+  [ "$rc" -ne 0 ] || fail "shared action skipped a non-sync branch while an exempt pattern was set"
+  assert_contains "$output" "structured pipeline step attestation" \
+    "gated feature branch did not still demand the attestation"
+  pass "shared action keeps gating ordinary branches when a sync exempt pattern is configured"
+}
+
 fetch_shared_verifier
 test_matching_head_and_completed_steps_pass
 test_mismatched_head_fails_with_both_shas
 test_missing_head_fails
+test_upstream_sync_branch_is_exempt
+test_feature_branch_still_gated_with_exempt_pattern_set
