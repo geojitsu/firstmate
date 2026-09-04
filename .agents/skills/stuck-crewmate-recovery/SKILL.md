@@ -43,7 +43,7 @@ If the worktree or ownership cannot be reconciled safely, leave all state intact
 
 Escalate in order:
 
-1. Peek the pane.
+1. Peek the pane, and check the task's steering inbox (`state/<id>.inbox/`) for unhandled `*.msg` records - a stale wake naming an unread firstmate instruction means the worker never acknowledged a durable steer, and the record itself shows exactly what was intended.
 2. If the peek confirms the crewmate is parked awaiting a decision firstmate has already escalated and that is still genuinely outstanding, record that park durably through `bin/fm-decision-hold.sh` under the `decision-hold-lifecycle` policy, never by writing the status marker by hand, then stop re-inspecting this pane until the bounded re-surface asks for a reconfirmation instead of escalating it further.
    Only a confirmed park on a still-open decision qualifies; if the park or the decision cannot be confirmed, continue down this ladder so a genuinely wedged crewmate still escalates.
 3. If the crewmate is waiting on a question its brief already answers, answer in one line via `FM_HOME=<this-firstmate-home> bin/fm-send.sh` from an active firstmate session unless `FM_HOME` is already set to the active firstmate home.

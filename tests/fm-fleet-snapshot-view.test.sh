@@ -456,6 +456,9 @@ test_backlog_tasks_axi_forms_and_overrides() {
 - [ ] parenthetical-title - Refresh sidebar (mobile) (repo: beta) (kind: ship)
 - [ ] blocked-reason - Blocked Reason (repo: beta) (kind: ship) blocked-by: queued-comma - waits on queued-comma
 - [ ] sample-decision-route - Choose sample route (repo: sample) (kind: captain) (since 2026-07-14) (hold: captain route choice pending) (hold-kind: captain)
+- [ ] dated-route - Deferred sample route (repo: sample) (kind: ship) (hold: captain sent this to later) (hold-kind: captain) (hold-until: 2026-09-01)
+- [ ] captain-gated-work - Captain-gated ship work (repo: sample) (kind: ship) (hold: captain go pending) (hold-kind: captain)
+- [ ] parked-prose - Parked captain call (repo: sample) (kind: ship) (hold: DEFERRED by captain) (hold-kind: captain)
 
 ## Done
 - [x] done-comma - Done Comma Task https://github.com/kunchenguid/firstmate/pull/42 (repo: gamma, merged 2026-07-09) (kind: ship)
@@ -474,7 +477,8 @@ EOF
   record_claude_idle "$home/state" bold-task
   printf 'done: report ready\n' > "$home/state/bold-task.status"
   fakebin=$(make_fakebin "$home")
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$SNAPSHOT" --json)
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" \
+    FM_SNAPSHOT_NOW=2026-07-14T00:00:00Z "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e --arg data "$data" --arg projects "$projects" '
     .roots.data == $data
       and .roots.projects == $projects
@@ -514,7 +518,23 @@ EOF
       and .kind == "captain"
       and .hold_reason == "captain route choice pending"
       and .hold_kind == "captain"
+      and .captain_actionable == true
   ' >/dev/null || fail "tasks-axi captain-hold metadata did not parse"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "dated-route")
+    | .title == "Deferred sample route"
+      and .hold_until == "2026-09-01"
+      and .captain_actionable == false
+      and .deferred_marker == false
+  ' >/dev/null || fail "a dated captain hold did not defer or strip its hold-until from the title"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "captain-gated-work")
+    | .kind == "ship" and .captain_actionable == true and .deferred_marker == false
+  ' >/dev/null || fail "captain actionability must not depend on the row kind"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "parked-prose")
+    | .captain_actionable == true and .deferred_marker == true
+  ' >/dev/null || fail "a prose-deferred captain hold did not carry the presentation marker"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "done-comma")
     | .repo == "gamma"
@@ -779,8 +799,106 @@ test_parked_scout_decision_stays_pending() {
   pass "a scout still parked at a decision stays pending (terminal clear does not over-fire)"
 }
 
+# Home-summary validity treats persistent secondmates as registered homes, not
+# in-flight children. They have no backlog rows, so they must not produce
+# unowned_current or terminal_in_flight. Ordinary crew/ship metas still do.
+test_home_summary_excludes_secondmate_from_child_inventory() {
+  local home fakebin out
+  home=$(make_home summary-secondmate-only)
+  mkdir -p "$home/secondmate-home" "$home/projects/unowned" "$home/projects/terminal"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+
+## Done
+EOF
+  fm_write_meta "$home/state/mate.meta" \
+    "window=firstmate:fm-mate" \
+    "worktree=$home/secondmate-home" \
+    "project=$home/secondmate-home" \
+    "harness=codex" \
+    "kind=secondmate" \
+    "mode=secondmate" \
+    "home=$home/secondmate-home" \
+    "projects=alpha"
+  printf 'working: watching delegated scope\n' > "$home/state/mate.status"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-secondmate-home-summary.v1"
+      and .valid == true
+      and .reason == null
+      and .invalidity == {kind:null,ids:[]}
+      and (.invalidity.kind != "unowned_current")
+      and (.invalidity.kind != "terminal_in_flight")
+  ' >/dev/null || fail "secondmate-only home with a clean backlog must be VALID: $out"
+
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] mate - Registered secondmate home (repo: alpha) (kind: secondmate) (since 2026-07-11)
+
+## Queued
+
+## Done
+EOF
+  printf 'done: delegated scope complete\n' > "$home/state/mate.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    .valid == true
+      and .reason == null
+      and .invalidity == {kind:null,ids:[]}
+      and (.invalidity.kind != "terminal_in_flight")
+  ' >/dev/null || fail "terminal secondmate with a matching in-flight row must not produce terminal_in_flight: $out"
+
+  fm_write_meta "$home/state/unowned-ship.meta" \
+    "window=firstmate:fm-unowned-ship" \
+    "worktree=$home/projects/unowned" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  record_claude_idle "$home/state" unowned-ship
+  printf 'needs-decision [key=unowned-ship]: choose a route\n' > "$home/state/unowned-ship.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    .valid == false
+      and .invalidity == {kind:"unowned_current",ids:["unowned-ship"]}
+      and (.reason | contains("unowned-ship=parked"))
+      and (.reason | contains("mate=") | not)
+  ' >/dev/null || fail "ordinary unowned ship must still produce unowned_current without listing the secondmate: $out"
+
+  rm -f "$home/state/unowned-ship.meta" "$home/state/unowned-ship.status"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] terminal-ship - Done child still in flight (repo: alpha) (kind: ship) (since 2026-07-11)
+
+## Queued
+
+## Done
+EOF
+  fm_write_meta "$home/state/terminal-ship.meta" \
+    "window=firstmate:fm-terminal-ship" \
+    "worktree=$home/projects/terminal" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  record_claude_idle "$home/state" terminal-ship
+  printf 'done: complete\n' > "$home/state/terminal-ship.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    .valid == false
+      and .invalidity == {kind:"terminal_in_flight",ids:["terminal-ship"]}
+      and (.reason | contains("terminal-ship=done"))
+      and (.reason | contains("mate=") | not)
+  ' >/dev/null || fail "ordinary terminal in-flight ship must still produce terminal_in_flight without listing the secondmate: $out"
+  pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_home_summary_excludes_secondmate_from_child_inventory
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
