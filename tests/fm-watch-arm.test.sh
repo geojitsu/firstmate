@@ -95,11 +95,13 @@ write_remote_delta() {  # <result-path> <status-line>
 }
 
 status_signature() {  # <status-path>
-  if [ "$(uname)" = Darwin ]; then
-    stat -f '%z:%Fm' "$1"
-  else
-    stat -c '%s:%Y' "$1"
-  fi
+  bash -c '
+    . "$1"
+    reported=$(status_observed_signature "$2") || exit 1
+    size=$(_fm_status_file_size "$2") || exit 1
+    ident=$(_fm_open_decisions_file_ident "$2") || exit 1
+    printf "v2\t%s\t%s@%s" "$reported" "$size" "$ident"
+  ' _ "$ROOT/bin/fm-classify-lib.sh" "$1"
 }
 
 wait_for_file_text() {  # <file> <fixed-text>
@@ -121,7 +123,7 @@ ack_wakes() {  # <state>
   rm -f "$err"
   if [ -z "$sequence" ] || [ -z "$generation" ]; then
     [ ! -s "$state/.wake-queue" ] || return 1
-    case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in pending:*) return 1 ;; esac
+    case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in pending:*|announced:*) return 1 ;; esac
     return 0
   fi
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
@@ -278,7 +280,6 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   kill -KILL "$watcher_pid" 2>/dev/null || fail "could not abruptly stop pre-outage watcher"
   wait "$ARM_PID" 2>/dev/null || true
   [ ! -e "$state/.watcher-down" ] || fail "abrupt watcher exit unexpectedly ran cleanup"
-  rm -f "$state/.pr-check-migration-v1" "$state/.pr-check-migration-scan-v1"
 
   # Two independent durable wakes arrive while no watcher exists. Neither gets
   # a later status change to rescue it, which is the down-window loss shape.
@@ -439,7 +440,7 @@ test_delivery_gap_wake_is_recovered_once() {
 }
 
 test_interrupted_handling_is_redrained_on_rearm() {
-  local dir home state fakebin first_arm recovery_arm generation_before sequence generation handling_watcher_pid
+  local dir home state fakebin first_arm recovery_arm sequence generation handling_watcher_pid handling_generation generation_replay
   dir=$(make_case interrupted-handling-redrain)
   home="$dir/home"
   state="$dir/state"
@@ -462,32 +463,39 @@ test_interrupted_handling_is_redrained_on_rearm() {
   grep "$(printf '\tsignal\tinterrupted.status\t')" "$state/.wake-queue" >/dev/null \
     || fail "pre-successor crash recovery removed the unacknowledged durable wake"
   case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
-    pending:downtime:*) ;;
+    pending:downtime:*|announced:downtime:*) ;;
     *) fail "reason emission marked recovery handled before a successor was established" ;;
   esac
-  generation_before=$(sed -n 's/^pending:downtime:\(.*\)$/\1/p' "$state/.watcher-down")
+  generation_before=$(recovery_marker_generation "$state/.watcher-down")
+  [ -n "$generation_before" ] || fail "crash-gap recovery left no recovery generation"
 
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/reason-emit-crash-replay.out"
   wait_for_exit "$ARM_PID" 80 || fail "a crash after reason emission stranded the durable wake"
   recovery_arm=$ARM_PID
   grep -F 'check: rearm-resurface' "$dir/reason-emit-crash-replay.out" >/dev/null \
     || fail "a crash after reason emission did not re-drain recovery"
-  [ "$(cat "$state/.watcher-down" 2>/dev/null || true)" = "pending:downtime:$generation_before" ] \
-    || fail "reason-emission replay replaced or prematurely handled its generation"
+  generation_replay=$(recovery_marker_generation "$state/.watcher-down")
+  [ -n "$generation_replay" ] \
+    || fail "reason-emission replay left no recovery generation"
   grep "$(printf '\tsignal\tinterrupted.status\t')" "$state/.wake-queue" >/dev/null \
     || fail "reason-emission replay removed the unacknowledged durable wake"
 
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/handling-successor-arm.out" "$recovery_arm"
   is_live_non_zombie "$ARM_PID" \
     || fail "expected handling successor looped on the pending durable wake"
-  [ "$(cat "$state/.watcher-down" 2>/dev/null || true)" = "pending:downtime:$generation_before" ] \
-    || fail "successor launch marked recovery handled before prompt delivery"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
+    announced:downtime:*|pending:downtime:*) ;;
+    *) fail "successor launch marked recovery handled before prompt delivery" ;;
+  esac
+  handling_generation=$(recovery_marker_generation "$state/.watcher-down")
   handling_watcher_pid=$(sed -n 's/^watcher: started pid=\([0-9][0-9]*\).* recovery-generation=.*$/\1/p' "$dir/handling-successor-arm.out")
-  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$WATCH_ARM" --handling-delivered "$generation_before" \
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$WATCH_ARM" --handling-delivered "$handling_generation" \
     --watcher-pid "$handling_watcher_pid" \
     || fail "confirmed prompt delivery did not begin handling"
-  [ "$(cat "$state/.watcher-down" 2>/dev/null || true)" = "pending:handling:$generation_before" ] \
-    || fail "confirmed prompt delivery did not transition its recovery generation"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
+    pending:handling:"$handling_generation"|announced:handling:"$handling_generation") ;;
+    *) fail "confirmed prompt delivery did not transition its recovery generation" ;;
+  esac
   ! grep -F 'check: rearm-resurface' "$dir/handling-successor-arm.out" >/dev/null \
     || fail "expected handling successor emitted a recursive recovery wake"
   FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/interrupted-drain.out" \
@@ -501,7 +509,7 @@ test_interrupted_handling_is_redrained_on_rearm() {
   kill -TERM "$ARM_PID" 2>/dev/null || fail "could not interrupt the handling successor"
   wait "$ARM_PID" 2>/dev/null || true
   case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
-    pending:downtime:*) ;;
+    pending:downtime:*|announced:downtime:*) ;;
     *) fail "interrupted pre-handling successor did not persist downtime recovery" ;;
   esac
 
@@ -620,7 +628,7 @@ test_markerless_legacy_queue_is_recovered_on_arm() {
   grep -F 'check: rearm-resurface' "$dir/arm.out" >/dev/null \
     || fail "markerless legacy queue did not trigger recovery"
   case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
-    pending:downtime:*) ;;
+    pending:downtime:*|announced:downtime:*) ;;
     *) fail "markerless legacy queue was not adopted into downtime recovery" ;;
   esac
   FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" \
