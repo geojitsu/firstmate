@@ -73,7 +73,7 @@ EOF
           {id:"captain-item",content:{__typename:"DraftIssue",id:"captain-draft",title:"Captain dispatch title",body:"`captain-task`\nold body"},fieldValues:{nodes:[
             {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Status"},name:"In flight",optionId:"flight-status"},
             {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Project"},name:"firstmate",optionId:"firstmate-project"},
-            {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Kind"},name:"decision",optionId:"decision-kind"},
+            {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Kind"},name:"ship",optionId:"ship-kind"},
             {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Priority"},name:"P3",optionId:"p3-priority"}
           ]}},
           {id:"gone-item",content:{__typename:"DraftIssue",id:"gone-draft",title:"Gone task",body:"`gone-task`\nold body"},fieldValues:{nodes:[
@@ -146,6 +146,12 @@ grep -F $'\tcheck\thelm-dispatch:captain-task\t' "$fixture/home/state/.wake-queu
 grep -F $'captain-task\tcaptain-item\tflight-status\tcaptain-item:flight-status' \
   "$fixture/home/state/.helm-dispatch-requests" >/dev/null \
   || fail "dispatch request marker was not recorded"
+grep -F 'itemId=captain-item' "$fixture/gh.log" | grep -F 'optionId=decision-kind' >/dev/null \
+  || fail "captain-held task was not classified as a decision on the Kind field"
+grep -F '## What you need to decide' "$fixture/gh.log" >/dev/null \
+  || fail "captain-held task body did not surface the decision the captain needs to make"
+grep -F 'Captain must choose the delivery path.' "$fixture/gh.log" >/dev/null \
+  || fail "captain-held task body did not include the hold reason"
 grep -F 'updateProjectV2DraftIssue' "$fixture/gh.log" >/dev/null \
   || fail "existing card content was not reconciled"
 grep -F 'addProjectV2DraftIssue' "$fixture/gh.log" >/dev/null \
