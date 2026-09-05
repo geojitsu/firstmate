@@ -152,7 +152,7 @@ test_empty_fleet_json() {
 }
 
 test_large_backlog_snapshot_inputs() {
-  local home out filler i staged
+  local home out filler staged
   home=$(make_home large-backlog)
   mkdir -p "$home/tmp"
   filler=$(printf 'x%.0s' {1..80})
@@ -224,6 +224,41 @@ test_large_secondmate_summary_inputs() {
   staged=$(find "$home/tmp" -mindepth 1 -maxdepth 1 -name 'fm-fleet-snapshot-json.*' -print -quit)
   [ -z "$staged" ] || fail "snapshot JSON staging directory must be cleaned up: $staged"
   pass "large secondmate summary inputs avoid argv size limits"
+}
+
+test_large_task_status_inputs() {
+  local home out filler i staged
+  home=$(make_home large-task-status)
+  mkdir -p "$home/tmp" "$home/secondmate-home"
+  fm_write_meta "$home/state/large-status.meta" \
+    "window=firstmate:fm-large-status" \
+    "worktree=$home/secondmate-home" \
+    "project=$home/secondmate-home" \
+    "harness=codex" \
+    "kind=secondmate" \
+    "mode=secondmate" \
+    "home=$home/secondmate-home" \
+    "remote_host=example.invalid" \
+    "remote_backend=unknown"
+  filler=$(head -c 140000 /dev/zero | tr '\0' x)
+  printf 'working: %s\n' "$filler" > "$home/state/large-status.status"
+
+  out=$(TMPDIR="$home/tmp" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary) \
+    || fail "large task status home summary must succeed: $out"
+  printf '%s' "$out" | jq -e '.schema == "fm-secondmate-home-summary.v1"' >/dev/null \
+    || fail "large task status home summary must remain valid JSON: $out"
+
+  out=$(TMPDIR="$home/tmp" FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "large task status fleet snapshot must succeed: $out"
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-fleet-snapshot.v1"
+      and (.tasks | length) == 1
+      and (.tasks[0].hints.open_decisions | length) == 0
+      and (.tasks[0].hints.last_event_text | length) == 140009
+  ' >/dev/null || fail "large task status event must remain present: $out"
+  staged=$(find "$home/tmp" -mindepth 1 -maxdepth 1 -name 'fm-fleet-snapshot-json.*' -print -quit)
+  [ -z "$staged" ] || fail "snapshot JSON staging directory must be cleaned up: $staged"
+  pass "large task status inputs avoid argv size limits"
 }
 
 test_fixture_snapshot_json() {
@@ -974,6 +1009,7 @@ EOF
 test_empty_fleet_json
 test_large_backlog_snapshot_inputs
 test_large_secondmate_summary_inputs
+test_large_task_status_inputs
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
 test_main_inventory_orphan_and_unstructured_disclosure
