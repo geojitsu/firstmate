@@ -120,6 +120,21 @@ A `manual` home owns its backlog file outright: the lifecycle transitions above 
 Absent or `tasks-axi` selects the default tasks-axi backend.
 The file format is unchanged in both modes; tasks-axi and manual edits produce the same `## In flight`, `## Queued`, and `## Done` sections.
 
+## Helm board sync (config/helm.json)
+
+The optional `bin/fm-helm-sync.sh` reconciles this home's `data/backlog.md` with a user-owned GitHub Project v2 board.
+Copy [`docs/examples/helm.json.example`](examples/helm.json.example) to `config/helm.json` and set the board owner and number before enabling the sync.
+The tracked example lives under `docs/examples/` so the whole `config/` directory can stay gitignored, while the real configuration remains local and untracked.
+The accepted configuration fields are `owner`, `number`, and optional `dispatch_status`, which defaults to `In flight`.
+The configured GitHub account needs the `project` scope, which provides the project read and write access used by the sync.
+An absent `config/helm.json` makes the script exit 0 without reading the backlog or contacting GitHub.
+The normal Stop-hook invocation hashes `data/backlog.md` and makes no network call when that hash matches the last successful sync.
+Run `bin/fm-helm-sync.sh --force` when the captain has changed a board card without changing the backlog and the board needs an explicit read.
+The script never deletes cards and never spawns work.
+Backlog content remains authoritative for card title, body, kind, repository, priority, and lifecycle status.
+The board's configured dispatch status is the only board-owned value and creates one durable `check` wake for ordinary firstmate intake.
+The sync records the request until the backlog reaches the requested lifecycle state, so repeating the same board edit does not enqueue duplicate wakes.
+
 ## Runtime backend (config/backend / FM_BACKEND)
 
 For spawn-capable adapters, the runtime session-provider backend controls where task windows/endpoints are created, captured, sent to, watched, and killed.
