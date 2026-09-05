@@ -151,6 +151,35 @@ test_empty_fleet_json() {
   pass "empty fleet snapshot and view use explicit absence markers"
 }
 
+test_large_backlog_snapshot_inputs() {
+  local home out filler i staged
+  home=$(make_home large-backlog)
+  mkdir -p "$home/tmp"
+  filler=$(printf 'x%.0s' {1..80})
+  {
+    printf '## In flight\n\n## Queued\n'
+    i=0
+    while [ "$i" -lt 2000 ]; do
+      printf -- '- [ ] filler-%04d - %s\n' "$i" "$filler"
+      i=$((i + 1))
+    done
+    printf '\n## Done\n'
+  } > "$home/data/backlog.md"
+
+  out=$(TMPDIR="$home/tmp" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary) \
+    || fail "large backlog home summary must succeed: $out"
+  printf '%s' "$out" | jq -e '.schema == "fm-secondmate-home-summary.v1"' >/dev/null \
+    || fail "large backlog home summary must remain valid JSON: $out"
+
+  out=$(TMPDIR="$home/tmp" FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "large backlog fleet snapshot must succeed: $out"
+  printf '%s' "$out" | jq -e '.schema == "fm-fleet-snapshot.v1"' >/dev/null \
+    || fail "large backlog fleet snapshot must remain valid JSON: $out"
+  staged=$(find "$home/tmp" -mindepth 1 -maxdepth 1 -name 'fm-fleet-snapshot-json.*' -print -quit)
+  [ -z "$staged" ] || fail "snapshot JSON staging directory must be cleaned up: $staged"
+  pass "large backlog snapshot inputs avoid argv size limits"
+}
+
 test_fixture_snapshot_json() {
   local home fakebin out ids
   home=$(make_home fixture)
@@ -897,6 +926,7 @@ EOF
 }
 
 test_empty_fleet_json
+test_large_backlog_snapshot_inputs
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
 test_main_inventory_orphan_and_unstructured_disclosure
