@@ -295,8 +295,9 @@ crew_state_json() {  # <id>
       esac
       ;;
   esac
-  jq -n --arg raw "$raw" --arg state "$state" --arg source "$source" --arg detail "$detail" \
-    '{state:$state,source:$source,detail:$detail,raw:$raw}'
+  { printf '%s\n' "$raw"; printf '%s\n' "$state"; printf '%s\n' "$source"; printf '%s\n' "$detail"; } \
+    | jq -Rs 'split("\n") as $fields
+              | {state:$fields[1],source:$fields[2],detail:$fields[3],raw:$fields[0]}'
 }
 
 status_event_json() {  # <status-log>
