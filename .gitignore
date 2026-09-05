@@ -12,6 +12,3 @@ __pycache__/
 .idea/
 .env
 config/
-!config/
-config/*
-!config/helm.json.example

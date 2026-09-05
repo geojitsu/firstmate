@@ -1320,7 +1320,7 @@ families_for_changed_path() {
     docs/configuration.md|docs/supervision-protocols/*)
       printf '%s\n' pure-contract-unit
       ;;
-    config/helm.json.example)
+    docs/examples/helm.json.example)
       # The reference config shape for the Helm sync. Its only consumer is
       # fm-helm-sync.test.sh, which builds config/helm.json fixtures from it.
       printf '%s\n' "__script__:fm-helm-sync.test.sh"

@@ -123,8 +123,8 @@ The file format is unchanged in both modes; tasks-axi and manual edits produce t
 ## Helm board sync (config/helm.json)
 
 The optional `bin/fm-helm-sync.sh` reconciles this home's `data/backlog.md` with a user-owned GitHub Project v2 board.
-Copy `config/helm.json.example` to `config/helm.json` and set the board owner and number before enabling the sync.
-The tracked example is intentionally allowed through the otherwise ignored `config/` directory, while the real configuration remains local and gitignored.
+Copy [`docs/examples/helm.json.example`](examples/helm.json.example) to `config/helm.json` and set the board owner and number before enabling the sync.
+The tracked example lives under `docs/examples/` so the whole `config/` directory can stay gitignored, while the real configuration remains local and untracked.
 The accepted configuration fields are `owner`, `number`, and optional `dispatch_status`, which defaults to `In flight`.
 The configured GitHub account needs the `project` scope, which provides the project read and write access used by the sync.
 An absent `config/helm.json` makes the script exit 0 without reading the backlog or contacting GitHub.
