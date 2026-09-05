@@ -372,11 +372,16 @@ record_for_id() {
 }
 
 record_kind() {
-  case "$(jq -r '.kind // "ship"' <<<"$1")" in
-    ship) printf '%s\n' ship ;;
-    captain) printf '%s\n' decision ;;
+  local record=$1 hold_kind hold_reason
+  hold_kind=$(jq -r '.hold_kind // empty' <<<"$record")
+  hold_reason=$(jq -r '.hold_reason // empty' <<<"$record")
+  if [ "$hold_kind" = captain ] && [ -n "$hold_reason" ]; then
+    printf '%s\n' decision
+    return 0
+  fi
+  case "$(jq -r '.kind // "ship"' <<<"$record")" in
     task|scout) printf '%s\n' investigation ;;
-    *) return 1 ;;
+    *) printf '%s\n' ship ;;
   esac
 }
 
@@ -394,10 +399,10 @@ record_project() {
 record_status() {
   local record=$1 section kind
   section=$(jq -r '.state' <<<"$record")
-  kind=$(jq -r '.kind // "ship"' <<<"$record")
+  kind=$(record_kind "$record")
   if [ "$section" = "done" ]; then
     printf '%s\n' Done
-  elif [ "$kind" = captain ]; then
+  elif [ "$kind" = decision ]; then
     printf '%s\n' "Waiting on you"
   elif [ "$section" = in_flight ]; then
     printf '%s\n' "In flight"
@@ -409,7 +414,7 @@ record_status() {
 write_card_body() {
   local record=$1 output=$2 id kind type repo priority filed hold blocked report pr line
   id=$(jq -r '.id' <<<"$record")
-  kind=$(record_kind "$record") || return 1
+  kind=$(record_kind "$record")
   case "$kind" in
     ship) type='ship - produces a change and a PR' ;;
     investigation) type='investigation - produces knowledge, not code' ;;
@@ -512,7 +517,7 @@ while IFS= read -r record; do
   task_id=$(jq -r '.id' <<<"$record")
   title=$(jq -r '.title' <<<"$record")
   desired_project=$(record_project "$record")
-  desired_kind=$(record_kind "$record") || helm_fail_open "unsupported kind for $task_id"
+  desired_kind=$(record_kind "$record")
   desired_status=$(record_status "$record")
   case "$desired_project" in
     firetabs|BetterBlueToo|firstmate|other) ;;

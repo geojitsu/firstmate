@@ -29,7 +29,7 @@ EOF
 ## Queued
 - [ ] queued-task - New queued title (repo: firetabs) (kind: ship) (priority: 1) (since: 2026-09-05)
   Keep the queued task body authoritative.
-- [ ] captain-task - Captain dispatch title (repo: firstmate) (kind: captain) (since: 2026-09-05) (hold: Captain must choose the delivery path.) (hold-kind: captain)
+- [ ] captain-task - Captain dispatch title (repo: firstmate) (since: 2026-09-05) (hold: Captain must choose the delivery path.) (hold-kind: captain)
 ## In flight
 - [ ] flight-task - Newly created flight task (repo: BetterBlueToo) (kind: ship) (priority: 2) (since: 2026-09-05)
 ## Done
