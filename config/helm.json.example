@@ -1,0 +1,9 @@
+{
+  // Copy this file to config/helm.json and edit the values for this home.
+  // The real config/helm.json is local and gitignored.
+  // An absent config/helm.json disables Helm synchronization completely.
+  // The captain can set dispatch_status to another Status option name.
+  "owner": "geojitsu",
+  "number": 2,
+  "dispatch_status": "In flight"
+}

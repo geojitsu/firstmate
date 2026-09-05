@@ -315,6 +315,17 @@ The same emitter handles a merge firstmate performed and one its poll detected, 
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
 
+## Helm board synchronization
+
+The optional `bin/fm-helm-sync.sh` gives the captain a GitHub Project v2 view over the durable `data/backlog.md` without making the board a second task database.
+It resolves the project fields and option ids by name at runtime, so a board owner can rename the project itself or reorder its options without putting ids in the repository.
+The sync creates missing draft cards, updates card content and backlog-owned fields, and marks cards for tasks no longer present as Done.
+It never archives or deletes a card, and a malformed backlog parse fails open before any board mutation.
+The board owns only the configured dispatch Status request.
+When a captain moves an eligible card into that Status, the script appends one durable `check` wake to the ordinary firstmate queue and leaves dispatch, project resolution, delivery mode, merge posture, and spawn authority to firstmate intake.
+The sync's durable request marker and the queue key make the board request idempotent across repeated Stop-hook runs.
+The real configuration is absent by default and lives in the home-local ignored `config/helm.json`, so upstream installations remain inert and `.claude/settings.json` stays untouched.
+
 ## Engineering-craft skills in briefs
 
 `bin/fm-pstack-sync.lock.json` is the single machine-readable owner of the upstream repository, commit pin, allowlist, exclusions, frontmatter policy, compatibility substitutions, and brief budget.
