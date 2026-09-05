@@ -481,6 +481,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/bugs/2026-09-05-fleet-snapshot-argv-limit.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/calm-mode-feasibility.md",
       "audience": "maintainer-verification"
     },

@@ -20,7 +20,7 @@ command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
 
 make_home() {  # <name>
   local home="$TMP_ROOT/$1" fakebin
-  mkdir -p "$home/state" "$home/data"
+  (umask 077; mkdir -p "$home/state" "$home/data")
   fakebin=$(fm_fakebin "$home")
   fm_fake_exit0 "$fakebin" lavish-axi
   printf '%s\n' "$home"
