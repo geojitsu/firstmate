@@ -180,6 +180,52 @@ test_large_backlog_snapshot_inputs() {
   pass "large backlog snapshot inputs avoid argv size limits"
 }
 
+test_large_secondmate_summary_inputs() {
+  local home mate out summary_bytes staged
+  home=$(make_home large-secondmate-parent)
+  mate=$(make_home large-secondmate-child)
+  mkdir -p "$home/tmp" "$mate/bin"
+  printf '%s\n' large-mate > "$mate/.fm-secondmate-home"
+  cp "$ROOT/AGENTS.md" "$mate/AGENTS.md"
+  printf -- '- large-mate - large summary (home: %s; scope: snapshot test; projects: alpha; added 2026-09-05)\n' \
+    "$mate" > "$home/data/secondmates.md"
+  jq -cn --arg home "$mate" --arg title "$(printf 'x%.0s' {1..120})" '
+    {
+      schema:"fm-secondmate-home-summary.v1",
+      generated:"2026-09-05T00:00:00Z",
+      generated_epoch:1788566400,
+      home:$home,
+      valid:true,
+      state:"idle",
+      reason:null,
+      invalidity:{kind:null,ids:[]},
+      active_children:[],
+      decisions_open:[],
+      holds:[],
+      queued:[],
+      landed:[range(0;800) | {id:("landed-" + tostring),title:$title,pr_url:null,report_path:null,local_note:null,completion:{verb:"done",date:"2026-09-05"}}],
+      endpoints:[],
+      counts:{active_children:0,decisions_open:0,holds:0,queued:0,landed:800,endpoints:0},
+      omitted:[]
+    }
+  ' > "$mate/state/home-summary.json"
+  summary_bytes=$(wc -c < "$mate/state/home-summary.json" | tr -d ' ')
+  [ "$summary_bytes" -gt 131072 ] && [ "$summary_bytes" -lt 262144 ] \
+    || fail "secondmate summary fixture must cross the argv limit within the ledger byte limit: $summary_bytes"
+
+  out=$(TMPDIR="$home/tmp" FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "large secondmate summary snapshot must succeed: $out"
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-fleet-snapshot.v1"
+      and (.secondmate_current.records | length) == 1
+      and (.secondmate_current.records[0].landed | length) == 800
+      and (.secondmate_landed.records | length) == 800
+  ' >/dev/null || fail "large secondmate summary must survive aggregation and final composition: $out"
+  staged=$(find "$home/tmp" -mindepth 1 -maxdepth 1 -name 'fm-fleet-snapshot-json.*' -print -quit)
+  [ -z "$staged" ] || fail "snapshot JSON staging directory must be cleaned up: $staged"
+  pass "large secondmate summary inputs avoid argv size limits"
+}
+
 test_fixture_snapshot_json() {
   local home fakebin out ids
   home=$(make_home fixture)
@@ -927,6 +973,7 @@ EOF
 
 test_empty_fleet_json
 test_large_backlog_snapshot_inputs
+test_large_secondmate_summary_inputs
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
 test_main_inventory_orphan_and_unstructured_disclosure
