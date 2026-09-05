@@ -239,6 +239,8 @@ snapshot_json_dir_prepare() {
 
 snapshot_json_input_file() {  # <json>
   local json=$1 file
+  # Large JSON must not be placed on jq's argv: a private file avoids the
+  # per-argument limit and is removed by snapshot_cleanup on every exit path.
   [ -n "$SNAPSHOT_JSON_DIR" ] || return 1
   file=$(umask 077; mktemp "$SNAPSHOT_JSON_DIR/input.XXXXXX") || return 1
   if ! printf '%s\n' "$json" > "$file"; then
