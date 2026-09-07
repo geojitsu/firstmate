@@ -49,6 +49,13 @@
 #     useful return-channel supervision data; remote secondmates use "unknown"
 #     without a probe, and other tasks use "not_checked".
 #   scout_reports[]: present data/<id>/report.md pointers.
+#   dispatch_order[]: eligible queued task ids across every home (main plus each
+#     registered secondmate), sorted by (priority, since): lowest priority number
+#     first (0 is highest, an unset priority sorts as 3), then oldest since:
+#     first. Eligible means queued, not held, no unresolved blockers, and not
+#     prose-deferred. Each entry carries id, home ("main" or the secondmate id),
+#     project, priority, since, and captain_actionable. This is the mechanical
+#     view firstmate consults when re-evaluating the queue (AGENTS.md 7 and 10).
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
 #     (orphan structured in-flight ids with no state/<id>.meta, and unstructured
@@ -862,6 +869,8 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
           hold_until:((.hold_until // null) | if . == null then null else trunc(40) end),
           deferred_marker:(.deferred_marker // false),
           captain_actionable:(.captain_actionable // false),
+          priority:((.priority // null) | if . == null then null else trunc(8) end),
+          since:((.since // null) | if . == null then null else trunc(40) end),
           repo:((.repo // null) | if . == null then null else trunc(120) end),
           kind:((.kind // null) | if . == null then null else trunc(40) end)}][:$queued_n]),
         landed:(if $landed_n == 0 then $landed_all else $landed_all[:$landed_n] end),
@@ -1782,6 +1791,29 @@ jq -n \
    | def backlog_by_id($id): ($backlog.records[]? | select(.structured == true and .id == $id) | .) // null;
    def task_by_id($id): ($tasks[]? | select(.id == $id) | .) // null;
    def report_kind($id): (task_by_id($id).kind // backlog_by_id($id).kind // "scout");
+   def dispatch_priority: (if . == null then 3 else (tostring | tonumber? // 3) end);
+   def eligible_main:
+     [ $backlog.records[]?
+       | select(.structured == true and .state == "queued"
+                and ((.unresolved_blocker_ids // []) | length) == 0
+                and (.hold_reason == null)
+                and ((.deferred_marker // false) | not))
+       | {id, home:"main", project:(.repo // null),
+          priority:(.priority // null), since:(.since // null),
+          captain_actionable:(.captain_actionable // false)} ];
+   def eligible_secondmates:
+     [ ($secondmate_current.records // [])[]
+       | .id as $hid
+       | (.queued // [])[]
+       | select(((.unresolved_blocker_ids // []) | length) == 0
+                and (.hold_reason == null)
+                and ((.deferred_marker // false) | not))
+       | {id, home:$hid, project:(.repo // null),
+          priority:(.priority // null), since:(.since // null),
+          captain_actionable:(.captain_actionable // false)} ];
+   def dispatch_order:
+     (eligible_main + eligible_secondmates)
+     | sort_by([ (.priority | dispatch_priority), (.since // "~") ]);
    {
      schema:"fm-fleet-snapshot.v1",
      generated:$generated,
@@ -1793,6 +1825,7 @@ jq -n \
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      secondmate_current:$secondmate_current,
      secondmate_landed:$secondmate_landed,
+     dispatch_order:dispatch_order,
      secondmate_guidance:{
        note:"For kind=secondmate, bearings selects validated structured state from that registered home; parent events and bounded terminal evidence are fallback-only supplements and never current-state authority."
      }

@@ -395,6 +395,8 @@ Tear down a ship task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.
 Never force teardown without explicit discard authority.
 After successful teardown, record completion, retain only the configured recent Done history, and re-evaluate queued work whose blockers and time gates have cleared.
+Among eligible queued items (dependencies resolved, time gates cleared, not held), dispatch the lowest priority number first (0 is highest); an unset priority sorts as 3.
+Break ties by oldest `since:` first.
 
 A secondmate is persistent and an empty queue is healthy.
 Retire one only on an explicit captain or main-firstmate decision, after loading `secondmate-provisioning`; its home must contain no work under way, and forced discard still requires explicit captain authority.
@@ -520,6 +522,9 @@ When a main-side thread such as a pending captain decision or relay reminder is 
 Captain calls discovered by investigations or visual reviews follow `captain-hold-lifecycle`, which owns their completion gate and recorded-answer rules.
 When the automatic transition gate applies, dispatch and completion move the item themselves - `bin/fm-spawn.sh` and `bin/fm-teardown.sh` own those transitions and refuse rather than report success without them - so what remains yours is filing the item before dispatch, recording decisions, and keeping notes current; `docs/configuration.md` owns gate applicability and the manual-backend exception.
 Re-evaluate queued work after every teardown and heartbeat, dispatching items only when dependencies and time gates have cleared.
+Among eligible queued items (dependencies resolved, time gates cleared, not held), dispatch the lowest priority number first (0 is highest); an unset priority sorts as 3.
+Break ties by oldest `since:` first.
+`bin/fm-fleet-snapshot.sh --json` `dispatch_order` is the mechanical view of that ordering across every home.
 
 `.tasks.toml`, `docs/configuration.md`, and current `tasks-axi --help` own the backlog schema, compatibility, retention, and routine command syntax.
 Use compatible `tasks-axi` when the configured backend selects it and the documented manual path otherwise; keep only the configured recent Done entries.

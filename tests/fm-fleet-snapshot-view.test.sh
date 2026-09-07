@@ -132,6 +132,35 @@ EOF
     "mode=ship"
 }
 
+test_dispatch_order_sorts_by_priority_then_since() {
+  local home out
+  home=$(make_home dispatch-order)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] p3-unset-old - Unset priority, older (repo: firstmate) (kind: ship) (since 2026-07-01)
+- [ ] p0-urgent - Urgent (repo: firstmate) (kind: ship) (priority: 0) (since 2026-08-10)
+- [ ] p2-mid - Elevated (repo: firstmate) (kind: ship) (priority: 2) (since 2026-08-01)
+- [ ] p2-mid-newer - Elevated, newer (repo: firstmate) (kind: ship) (priority: 2) (since 2026-08-05)
+- [ ] blocked-p0 - Urgent but blocked blocked-by: p0-urgent (repo: firstmate) (kind: ship) (priority: 0) (since 2026-08-01)
+- [ ] held-p1 - Urgent but held (repo: firstmate) (kind: ship) (priority: 1) (since 2026-08-01) (hold: captain must choose) (hold-kind: captain)
+
+## Done
+EOF
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "dispatch-order snapshot must succeed: $out"
+  printf '%s' "$out" | jq -e '
+    [.dispatch_order[].id] == ["p0-urgent","p2-mid","p2-mid-newer","p3-unset-old"]
+  ' >/dev/null \
+    || fail "dispatch_order wrong: $(printf '%s' "$out" | jq -c '.dispatch_order')"
+  printf '%s' "$out" | jq -e '
+    all(.dispatch_order[]; .home == "main" and .project == "firstmate")
+  ' >/dev/null \
+    || fail "dispatch_order entries missing home/project annotation: $out"
+  pass "dispatch_order ranks eligible queued work by priority then since, excluding blocked and held"
+}
+
 test_empty_fleet_json() {
   local home out view
   home=$(make_home empty)
@@ -1007,6 +1036,7 @@ EOF
   pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
+test_dispatch_order_sorts_by_priority_then_since
 test_empty_fleet_json
 test_large_backlog_snapshot_inputs
 test_large_secondmate_summary_inputs
