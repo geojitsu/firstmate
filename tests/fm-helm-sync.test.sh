@@ -231,7 +231,18 @@ board_json "$(jq -n \
   --argjson b "$(draft_item del-item del-draft del-task 'Delete my card' 'x' Queued queued-status P3 p3-priority)" \
   '[$a,$b]')" > "$case_dir/board.json"
 run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "delete-case seed run failed"
-# Captain deletes del-item from the board.
+board_json "$(jq -n \
+  --argjson a "$(draft_item keep-item keep-draft keep-task 'Keep me' 'x' Queued queued-status P3 p3-priority)" \
+  --argjson b "$(draft_item del-replacement del-replacement-draft del-task 'Delete my card' 'x' Queued queued-status P3 p3-priority)" \
+  '[$a,$b]')" > "$case_dir/board.json"
+: > "$case_dir/tasks-axi.log"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "recreated-card sync failed"
+if grep -F 'hold del-task --kind captain' "$case_dir/tasks-axi.log" >/dev/null; then
+  fail "a replacement card was misread as a deletion"
+fi
+if grep -F 'helm-card-deleted:del-task' "$case_dir/home/state/.wake-queue" >/dev/null; then
+  fail "a replacement card raised a deletion wake"
+fi
 board_json "$(jq -n \
   --argjson a "$(draft_item keep-item keep-draft keep-task 'Keep me' 'x' Queued queued-status P3 p3-priority)" \
   '[$a]')" > "$case_dir/board.json"
@@ -262,6 +273,20 @@ run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "deleted-card follow-up sync 
 if grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
   fail "a deleted live card was recreated on the next sync"
 fi
+board_json "$(jq -n \
+  --argjson a "$(draft_item keep-item keep-draft keep-task 'Keep me' 'x' Queued queued-status P3 p3-priority)" \
+  --argjson b "$(draft_item del-restored del-restored-draft del-task 'Delete my card' 'x' Queued queued-status P3 p3-priority)" \
+  '[$a,$b]')" > "$case_dir/board.json"
+: > "$case_dir/tasks-axi.log"
+wake_count=$(wc -l < "$case_dir/home/state/.wake-queue")
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "restored-card sync failed"
+if grep -F 'hold del-task --kind captain' "$case_dir/tasks-axi.log" >/dev/null; then
+  fail "a restored card left its task held"
+fi
+[ "$(wc -l < "$case_dir/home/state/.wake-queue")" -eq "$wake_count" ] \
+  || fail "a restored card queued another deletion wake"
+[ ! -e "$case_dir/home/state/helm-deleted.tsv" ] \
+  || fail "a restored card did not clear its deletion tombstone"
 pass "a deleted card holds its live task for the captain and is not treated as new"
 
 # New, not yet carded: a board card with no backlog task and never seen before

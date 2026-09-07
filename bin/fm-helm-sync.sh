@@ -815,6 +815,10 @@ if [ "$TSV_EXISTED" = true ]; then
     old_item_id=$(printf '%s' "$old_line" | awk -F '\t' '{print $2}')
     [ -n "$task_id" ] && [ -n "$old_item_id" ] || continue
     grep -F -x -q -- "$old_item_id" "$BOARD_ITEM_IDS" && continue
+    jq -e --arg id "$task_id" '
+      any(.data.user.projectV2.items.nodes[];
+        (.content.body // "") | split("\n")[0] == ("`" + $id + "`"))
+    ' "$BOARD_JSON" >/dev/null 2>&1 && continue
 
     record=$(record_for_id "$task_id")
     if [ "$record" = null ]; then
