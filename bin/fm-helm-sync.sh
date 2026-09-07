@@ -685,7 +685,7 @@ while IFS= read -r record; do
       continue
     fi
     old_line=$(old_card_line "$task_id")
-    if [ -n "$old_line" ] && [ "$(jq -r '.state' <<<"$record")" != done ]; then
+    if [ -n "$old_line" ] && [ "$(jq -r '.state' <<<"$record")" != "done" ]; then
       old_item_id=$(printf '%s' "$old_line" | awk -F '\t' '{print $2}')
       if [ -n "$old_item_id" ] && ! grep -F -x -q -- "$old_item_id" "$BOARD_ITEM_IDS"; then
         continue
