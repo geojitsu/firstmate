@@ -48,7 +48,13 @@ install_gh() {  # <case-dir>
 #!/usr/bin/env bash
 set -u
 if [ "${1:-}" = auth ]; then printf "%s\n" "Token scopes: 'project', 'repo'"; exit 0; fi
-if [ "${1:-}" = api ]; then cat "$FM_FAKE_BOARD"; exit 0; fi
+if [ "${1:-}" = api ]; then
+  case "$*" in
+    *cursor=page-2*) cat "$FM_FAKE_BOARD_PAGE_2" ;;
+    *) cat "$FM_FAKE_BOARD" ;;
+  esac
+  exit 0
+fi
 exit 1
 SH
   chmod +x "$fb/gh"
@@ -57,6 +63,7 @@ SH
 
 run_poll() {  # <case-dir> <fakebin>
   FM_HOME="$1/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$1/board.json" \
+    FM_FAKE_BOARD_PAGE_2="${FM_FAKE_BOARD_PAGE_2:-}" \
     PATH="$2:$PATH" "$POLL"
 }
 
@@ -116,3 +123,18 @@ out=$(run_poll "$case_dir" "$fb" 2>&1)
 printf '%s\n' "$out" | grep -F 'Helm board and backlog both changed' >/dev/null \
   || fail "a concurrent board and backlog change did not request reconciliation: $out"
 pass "a board change with a pending backlog change requests reconciliation"
+
+FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$case_dir/board.json" \
+  PATH="$fb:$PATH" "$SYNC" >/dev/null 2>&1 || fail "pagination sync baseline failed"
+rm -f "$case_dir/home/state/.helm-board-poll"
+board_fixture Done P4 p4-priority | jq '.data.user.projectV2.items.pageInfo={hasNextPage:true,endCursor:"page-2"}' > "$case_dir/board.json"
+board_fixture Queued P3 p3-priority > "$case_dir/page-two.json"
+FM_FAKE_BOARD_PAGE_2="$case_dir/page-two.json" out=$(run_poll "$case_dir" "$fb" 2>&1) \
+  || fail "first paginated poll exited nonzero: $out"
+[ -z "$out" ] || fail "first paginated poll should baseline silently: $out"
+board_fixture "In flight" P0 p0-priority > "$case_dir/page-two.json"
+FM_FAKE_BOARD_PAGE_2="$case_dir/page-two.json" out=$(run_poll "$case_dir" "$fb" 2>&1) \
+  || fail "second paginated poll exited nonzero: $out"
+printf '%s\n' "$out" | grep -F 'fm-helm-sync.sh --force' >/dev/null \
+  || fail "a page-two board edit did not wake firstmate: $out"
+pass "the board poll detects an edit on a second project page"

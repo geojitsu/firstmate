@@ -174,7 +174,7 @@ BOARD_JSON="$TMP_DIR/board.json"
 GH_ERROR="$TMP_DIR/gh-error"
 
 # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
-GRAPHQL_QUERY='query($owner:String!, $number:Int!) {
+GRAPHQL_QUERY='query($owner:String!, $number:Int!, $cursor:String) {
   user(login:$owner) {
     projectV2(number:$number) {
       id
@@ -186,8 +186,8 @@ GRAPHQL_QUERY='query($owner:String!, $number:Int!) {
           ... on ProjectV2SingleSelectField { id name options { id name } }
         }
       }
-      items(first:100) {
-        pageInfo { hasNextPage }
+      items(first:100, after:$cursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           content {
@@ -211,19 +211,44 @@ GRAPHQL_QUERY='query($owner:String!, $number:Int!) {
   }
 }'
 
-if ! gh api graphql \
-  --field "query=$GRAPHQL_QUERY" \
-  --field "owner=$OWNER" \
-  --field "number=$PROJECT_NUMBER" \
-  >"$BOARD_JSON" 2>"$GH_ERROR"; then
-  helm_fail_open "GitHub project read failed"
-fi
-if jq -e '(.errors // []) | length > 0' "$BOARD_JSON" >/dev/null 2>&1; then
-  helm_fail_open "GitHub project read returned an error"
-fi
-if ! jq -e '.data.user.projectV2.id and (.data.user.projectV2.fields.pageInfo.hasNextPage == false) and (.data.user.projectV2.items.pageInfo.hasNextPage == false)' "$BOARD_JSON" >/dev/null 2>&1; then
-  helm_fail_open "GitHub project was not found or exceeded the safe page bound"
-fi
+PAGE_COUNT=0
+CURSOR=
+while :; do
+  PAGE_COUNT=$((PAGE_COUNT + 1))
+  [ "$PAGE_COUNT" -le 50 ] || helm_fail_open "GitHub project has more than 5000 items"
+  PAGE_JSON="$TMP_DIR/board-page-$PAGE_COUNT.json"
+  GH_ARGS=(
+    --field "query=$GRAPHQL_QUERY"
+    --field "owner=$OWNER"
+    --field "number=$PROJECT_NUMBER"
+  )
+  [ -z "$CURSOR" ] || GH_ARGS+=(--field "cursor=$CURSOR")
+  if ! gh api graphql "${GH_ARGS[@]}" >"$PAGE_JSON" 2>"$GH_ERROR"; then
+    helm_fail_open "GitHub project read failed"
+  fi
+  if jq -e '(.errors // []) | length > 0' "$PAGE_JSON" >/dev/null 2>&1; then
+    helm_fail_open "GitHub project read returned an error"
+  fi
+  if ! jq -e '.data.user.projectV2.id and (.data.user.projectV2.fields.pageInfo.hasNextPage == false)' "$PAGE_JSON" >/dev/null 2>&1; then
+    helm_fail_open "GitHub project fields exceeded the safe page bound"
+  fi
+  if [ "$PAGE_COUNT" -eq 1 ]; then
+    mv -f -- "$PAGE_JSON" "$BOARD_JSON"
+  else
+    jq -s '.[0] as $all | .[1] as $page
+      | $all
+      | .data.user.projectV2.items.nodes += $page.data.user.projectV2.items.nodes
+      | .data.user.projectV2.items.pageInfo = $page.data.user.projectV2.items.pageInfo' \
+      "$BOARD_JSON" "$PAGE_JSON" >"$BOARD_JSON.next" \
+      || helm_fail_open "could not combine GitHub project pages"
+    mv -f -- "$BOARD_JSON.next" "$BOARD_JSON"
+  fi
+  if [ "$(jq -r '.data.user.projectV2.items.pageInfo.hasNextPage' "$BOARD_JSON")" = false ]; then
+    break
+  fi
+  CURSOR=$(jq -r '.data.user.projectV2.items.pageInfo.endCursor // empty' "$BOARD_JSON")
+  [ -n "$CURSOR" ] || helm_fail_open "GitHub project item page is missing its cursor"
+done
 
 # Parse every discovered home's backlog into one tagged union.
 BACKLOG_JSON="$TMP_DIR/backlog.json"

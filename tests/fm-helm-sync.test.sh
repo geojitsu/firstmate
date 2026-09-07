@@ -89,6 +89,8 @@ if [ "${1:-}" = api ]; then
       printf '%s\n' '{"data":{"updateProjectV2DraftIssue":{"draftIssue":{"id":"updated-draft"}}}}' ;;
     *updateProjectV2ItemFieldValue*)
       printf '%s\n' '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"updated-item"}}}}' ;;
+    *cursor=page-2*)
+      cat "$FM_FAKE_BOARD_PAGE_2" ;;
     *)
       cat "$FM_FAKE_BOARD" ;;
   esac
@@ -117,6 +119,7 @@ run_sync() {  # <case-dir> <fakebin> [--force]
   FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_BOARD="$case_dir/board.json" \
+    FM_FAKE_BOARD_PAGE_2="${FM_FAKE_BOARD_PAGE_2:-}" \
     FM_FAKE_GH_LOG="$case_dir/gh.log" \
     FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
     FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
@@ -173,6 +176,31 @@ grep -F $'\tmain-item\t' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
 grep -F $'\tsm-item\t' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
   || fail "identity cache is missing the secondmate task row"
 pass "fleet union reconciles every home and closes only cards in no home's backlog"
+
+pagination_dir="$TMP_ROOT/pagination"
+mkdir -p "$pagination_dir/home/config" "$pagination_dir/home/data" "$pagination_dir/home/state"
+pagination_fb=$(install_fakes "$pagination_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$pagination_dir/home/config/helm.json"
+cat > "$pagination_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] page-two-task - Second page task (repo: firstmate) (kind: ship) (since: 2026-09-05)
+## Done
+EOF
+board_json '[]' | jq '.data.user.projectV2.items.pageInfo={hasNextPage:true,endCursor:"page-2"}' > "$pagination_dir/board.json"
+board_json "$(jq -n \
+  --argjson a "$(draft_item page-two-item page-two-draft page-two-task 'Second page task' 'x' Queued queued-status P3 p3-priority)" \
+  --argjson b "$(draft_item page-two-gone page-two-gone-draft gone-page-two 'Gone page two' 'x' Queued queued-status P3 p3-priority)" \
+  '[$a,$b]')" > "$pagination_dir/page-two.json"
+: > "$pagination_dir/gh.log"; : > "$pagination_dir/tasks-axi.log"
+FM_FAKE_BOARD_PAGE_2="$pagination_dir/page-two.json" run_sync "$pagination_dir" "$pagination_fb" >/dev/null 2>&1 \
+  || fail "paginated sync failed"
+grep -F 'itemId=page-two-item' "$pagination_dir/gh.log" | grep -F 'optionId=flight-status' >/dev/null \
+  || fail "a page-two task was not reconciled"
+grep -F 'itemId=page-two-gone' "$pagination_dir/gh.log" | grep -F 'optionId=done-status' >/dev/null \
+  || fail "a page-two missing task was not closed"
+pass "sync reconciles cards from a second project page"
 
 # Identity cache rebuild: drop it, run again, it comes back from the board.
 rm -f "$case_dir/home/state/helm-cards.tsv"

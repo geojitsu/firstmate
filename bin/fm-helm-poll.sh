@@ -83,11 +83,11 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-helm-poll.XXXXXX") || exit 0
 BOARD_JSON="$TMP_DIR/board.json"
 
 # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
-QUERY='query($owner:String!, $number:Int!) {
+QUERY='query($owner:String!, $number:Int!, $cursor:String) {
   user(login:$owner) {
     projectV2(number:$number) {
-      items(first:100) {
-        pageInfo { hasNextPage }
+      items(first:100, after:$cursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           content {
@@ -110,17 +110,38 @@ QUERY='query($owner:String!, $number:Int!) {
   }
 }'
 
-# Bound the one network call well inside FM_CHECK_TIMEOUT; a timeout just means
-# "no wake this cycle".
 GH_TIMEOUT=()
 command -v timeout >/dev/null 2>&1 && GH_TIMEOUT=(timeout 20)
-"${GH_TIMEOUT[@]}" gh api graphql \
-  --field "query=$QUERY" \
-  --field "owner=$OWNER" \
-  --field "number=$PROJECT_NUMBER" \
-  >"$BOARD_JSON" 2>/dev/null || exit 0
-jq -e '(.errors // []) | length == 0' "$BOARD_JSON" >/dev/null 2>&1 || exit 0
-jq -e '.data.user.projectV2.items.pageInfo.hasNextPage == false' "$BOARD_JSON" >/dev/null 2>&1 || exit 0
+PAGE_COUNT=0
+CURSOR=
+while :; do
+  PAGE_COUNT=$((PAGE_COUNT + 1))
+  [ "$PAGE_COUNT" -le 50 ] || exit 0
+  PAGE_JSON="$TMP_DIR/board-page-$PAGE_COUNT.json"
+  GH_ARGS=(
+    --field "query=$QUERY"
+    --field "owner=$OWNER"
+    --field "number=$PROJECT_NUMBER"
+  )
+  [ -z "$CURSOR" ] || GH_ARGS+=(--field "cursor=$CURSOR")
+  "${GH_TIMEOUT[@]}" gh api graphql "${GH_ARGS[@]}" >"$PAGE_JSON" 2>/dev/null || exit 0
+  jq -e '(.errors // []) | length == 0' "$PAGE_JSON" >/dev/null 2>&1 || exit 0
+  if [ "$PAGE_COUNT" -eq 1 ]; then
+    mv -f -- "$PAGE_JSON" "$BOARD_JSON"
+  else
+    jq -s '.[0] as $all | .[1] as $page
+      | $all
+      | .data.user.projectV2.items.nodes += $page.data.user.projectV2.items.nodes
+      | .data.user.projectV2.items.pageInfo = $page.data.user.projectV2.items.pageInfo' \
+      "$BOARD_JSON" "$PAGE_JSON" >"$BOARD_JSON.next" 2>/dev/null || exit 0
+    mv -f -- "$BOARD_JSON.next" "$BOARD_JSON" || exit 0
+  fi
+  if [ "$(jq -r '.data.user.projectV2.items.pageInfo.hasNextPage' "$BOARD_JSON")" = false ]; then
+    break
+  fi
+  CURSOR=$(jq -r '.data.user.projectV2.items.pageInfo.endCursor // empty' "$BOARD_JSON")
+  [ -n "$CURSOR" ] || exit 0
+done
 
 SIGNATURE=$(jq -r '
   def fieldval($n): [.fieldValues.nodes[]? | select(.field.name == $n) | .name][0] // "";
