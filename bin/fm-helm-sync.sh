@@ -80,6 +80,7 @@ CONFIG_FILE="$CONFIG_PATH/helm.json"
 HASH_FILE="$STATE_PATH/.helm-sync-backlog.sha256"
 DISPATCH_FILE="$STATE_PATH/.helm-dispatch-requests"
 CARDS_FILE="$STATE_PATH/helm-cards.tsv"
+DELETED_FILE="$STATE_PATH/helm-deleted.tsv"
 LOCK_FILE="$STATE_PATH/.helm-sync.lock"
 TMP_DIR=
 LOCK_HELD=false
@@ -127,7 +128,7 @@ done
 command -v jq >/dev/null 2>&1 || helm_fail_open "jq is unavailable"
 command -v gh >/dev/null 2>&1 || helm_fail_open "gh is unavailable"
 
-if [ -L "$HASH_FILE" ] || [ -L "$DISPATCH_FILE" ] || [ -L "$CARDS_FILE" ]; then
+if [ -L "$HASH_FILE" ] || [ -L "$DISPATCH_FILE" ] || [ -L "$CARDS_FILE" ] || [ -L "$DELETED_FILE" ]; then
   helm_fail_open "refusing symlinked Helm state"
 fi
 
@@ -519,8 +520,11 @@ queue_dispatch_request() {
 # a failure is logged and retried on the next run rather than failing the sync.
 backlog_write_priority() {
   local home=$1 task_id=$2 value=$3
-  ( cd "$home" 2>/dev/null && FM_HOME="$home" tasks-axi update "$task_id" --priority "$value" >/dev/null 2>&1 ) \
-    || printf 'fm-helm-sync: could not write priority %s for %s in %s\n' "$value" "$task_id" "$home" >&2
+  if ( cd "$home" 2>/dev/null && FM_HOME="$home" tasks-axi update "$task_id" --priority "$value" >/dev/null 2>&1 ); then
+    return 0
+  fi
+  printf 'fm-helm-sync: could not write priority %s for %s in %s\n' "$value" "$task_id" "$home" >&2
+  return 1
 }
 
 # Hold a task for the captain in its owning home after a card deletion. Idempotent.
@@ -557,10 +561,21 @@ if [ -f "$CARDS_FILE" ]; then
 fi
 NEW_CARDS="$TMP_DIR/new-cards.tsv"
 : >"$NEW_CARDS"
+OLD_DELETED="$TMP_DIR/old-deleted.tsv"
+: >"$OLD_DELETED"
+if [ -f "$DELETED_FILE" ]; then
+  cat -- "$DELETED_FILE" >"$OLD_DELETED" 2>/dev/null || : >"$OLD_DELETED"
+fi
+NEW_DELETED="$TMP_DIR/new-deleted.tsv"
+: >"$NEW_DELETED"
 NOW_EPOCH=$(date +%s)
 
 old_card_line() {
   awk -F '\t' -v t="$1" '$1 == t { print; exit }' "$OLD_CARDS"
+}
+
+old_deleted_line() {
+  awk -F '\t' -v t="$1" '$1 == t { print; exit }' "$OLD_DELETED"
 }
 
 BOARD_ITEM_IDS="$TMP_DIR/board-item-ids"
@@ -604,6 +619,11 @@ while IFS= read -r record; do
   fingerprint=$(fingerprint_of "$desired_status" "$desired_priority" "$desired_project" "$desired_kind" "$title" "$body_hash")
 
   if [ "$card" = null ]; then
+    deleted_line=$(old_deleted_line "$task_id")
+    if [ -n "$deleted_line" ] && [ "$(jq -r '.state' <<<"$record")" != done ]; then
+      printf '%s\n' "$deleted_line" >>"$NEW_DELETED"
+      continue
+    fi
     old_line=$(old_card_line "$task_id")
     if [ -n "$old_line" ] && [ "$(jq -r '.state' <<<"$record")" != done ]; then
       old_item_id=$(printf '%s' "$old_line" | awk -F '\t' '{print $2}')
@@ -661,7 +681,12 @@ while IFS= read -r record; do
   priority_from_board=$(priority_from_option "$current_priority_name")
   push_priority=true
   if [ "$FORCE" -eq 1 ] && [ -n "$priority_from_board" ] && [ "$priority_from_board" != "$desired_priority_n" ]; then
-    [ "$desired_priority_n" = "$priority_from_board" ] || backlog_write_priority "$home_path" "$task_id" "$priority_from_board"
+    if ! backlog_write_priority "$home_path" "$task_id" "$priority_from_board"; then
+      queue_board_event "helm-priority:$task_id" \
+        "check: captain changed Helm card $task_id Priority; reconcile it into the backlog" \
+        || helm_fail_open "could not enqueue the Helm Priority reconciliation for $task_id"
+      helm_fail_open "could not write Helm Priority for $task_id"
+    fi
     push_priority=false
   fi
 
@@ -790,6 +815,7 @@ if [ "$TSV_EXISTED" = true ]; then
     fi
     reason="Helm card deleted; $choices."
     backlog_hold_for_captain "$home_path" "$task_id" "$reason"
+    printf '%s\t%s\n' "$task_id" "$old_item_id" >>"$NEW_DELETED"
     queue_board_event "helm-card-deleted:$task_id" \
       "check: captain deleted Helm card $task_id ($choices)" \
       || helm_fail_open "could not enqueue the Helm card deletion for $task_id"
@@ -802,6 +828,15 @@ if [ -s "$NEW_CARDS" ] || [ "$TSV_EXISTED" = true ]; then
   sort -u "$NEW_CARDS" >"$CARDS_TMP" || helm_fail_open "could not stage the Helm identity cache"
   chmod 0600 "$CARDS_TMP" || helm_fail_open "could not protect the Helm identity cache"
   mv -f -- "$CARDS_TMP" "$CARDS_FILE" || helm_fail_open "could not publish the Helm identity cache"
+fi
+
+if [ -s "$NEW_DELETED" ]; then
+  DELETED_TMP=$(mktemp "$TMP_DIR/deleted.XXXXXX") || helm_fail_open "could not stage Helm deletion state"
+  sort -u "$NEW_DELETED" >"$DELETED_TMP" || helm_fail_open "could not stage Helm deletion state"
+  chmod 0600 "$DELETED_TMP" || helm_fail_open "could not protect Helm deletion state"
+  mv -f -- "$DELETED_TMP" "$DELETED_FILE" || helm_fail_open "could not publish Helm deletion state"
+else
+  rm -f -- "$DELETED_FILE"
 fi
 
 HASH_TMP=$(mktemp "$TMP_DIR/hash.XXXXXX") || helm_fail_open "could not stage Helm sync state"

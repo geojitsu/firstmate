@@ -101,6 +101,9 @@ SH
 #!/usr/bin/env bash
 set -u
 printf '%s\t%s\n' "${FM_HOME:-}" "$*" >> "$FM_FAKE_TASKS_LOG"
+if [ "${FM_FAKE_TASKS_FAIL_PRIORITY:-}" = 1 ] && [ "${1:-}" = update ] && [ "${3:-}" = --priority ]; then
+  exit 1
+fi
 exit 0
 SH
   chmod +x "$fb/tasks-axi"
@@ -117,6 +120,7 @@ run_sync() {  # <case-dir> <fakebin> [--force]
     FM_FAKE_GH_LOG="$case_dir/gh.log" \
     FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
     FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
+    FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
     PATH="$fb:$PATH" \
     "$SYNC" "${a[@]}"
 }
@@ -217,6 +221,19 @@ if grep -F 'helm-new-card:del-task' "$case_dir/home/state/.wake-queue" >/dev/nul
 fi
 grep -F $'\tdel-item\t' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
   && fail "the deleted card's identity row was retained"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] keep-task - Keep me (repo: firstmate) (kind: ship) (since: 2026-09-05)
+- [ ] del-task - Delete my card (repo: firstmate) (kind: ship) (since: 2026-09-05) (hold: captain review) (hold-kind: captain)
+## Done
+EOF
+: > "$case_dir/gh.log"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "deleted-card follow-up sync failed"
+if grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
+  fail "a deleted live card was recreated on the next sync"
+fi
 pass "a deleted card holds its live task for the captain and is not treated as new"
 
 # New, not yet carded: a board card with no backlog task and never seen before
@@ -304,6 +321,31 @@ if grep -F 'itemId=prio-item' "$case_dir/gh.log" | grep -F 'fieldId=priority-fie
   fail "the sync pushed over the captain's board Priority edit"
 fi
 pass "a forced read accepts a captain board Priority edit into the owning backlog"
+
+case_dir="$TMP_ROOT/prio-failure"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] failed-prio - Priority task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item failed-prio-item failed-prio-draft failed-prio 'Priority task' 'x' Queued queued-status P4 p4-priority)" '[$a]')" > "$case_dir/board.json"
+: > "$case_dir/tasks-axi.log"; : > "$case_dir/gh.log"
+FM_FAKE_TASKS_FAIL_PRIORITY=1 run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 \
+  || fail "priority write failure must fail open"
+grep -F $'\tcheck\thelm-priority:failed-prio\t' "$case_dir/home/state/.wake-queue" >/dev/null \
+  || fail "a failed Priority write-back did not queue reconciliation"
+[ ! -e "$case_dir/home/state/.helm-sync-backlog.sha256" ] \
+  || fail "a failed Priority write-back advanced the sync debounce state"
+: > "$case_dir/tasks-axi.log"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "priority retry sync failed"
+grep -F 'update failed-prio --priority 4' "$case_dir/tasks-axi.log" >/dev/null \
+  || fail "a failed Priority write-back was not retried by forced reconciliation"
+pass "a failed Priority write-back queues reconciliation and remains retryable"
 
 # ---------------------------------------------------------------------------
 # Debounce and fail-open posture.
