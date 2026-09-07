@@ -563,6 +563,10 @@ old_card_line() {
   awk -F '\t' -v t="$1" '$1 == t { print; exit }' "$OLD_CARDS"
 }
 
+BOARD_ITEM_IDS="$TMP_DIR/board-item-ids"
+jq -r '.data.user.projectV2.items.nodes[].id' "$BOARD_JSON" | sort -u >"$BOARD_ITEM_IDS" \
+  || helm_fail_open "could not index current Helm cards"
+
 record_count=$(jq 'length' "$BACKLOG_JSON")
 
 while IFS= read -r record; do
@@ -600,6 +604,13 @@ while IFS= read -r record; do
   fingerprint=$(fingerprint_of "$desired_status" "$desired_priority" "$desired_project" "$desired_kind" "$title" "$body_hash")
 
   if [ "$card" = null ]; then
+    old_line=$(old_card_line "$task_id")
+    if [ -n "$old_line" ] && [ "$(jq -r '.state' <<<"$record")" != done ]; then
+      old_item_id=$(printf '%s' "$old_line" | awk -F '\t' '{print $2}')
+      if [ -n "$old_item_id" ] && ! grep -F -x -q -- "$old_item_id" "$BOARD_ITEM_IDS"; then
+        continue
+      fi
+    fi
     item_id=$(create_draft "$title" "$body") || helm_fail_open "could not create the Helm card for $task_id"
     [ -n "$item_id" ] || helm_fail_open "GitHub did not return the new Helm card for $task_id"
     content_type=draft
@@ -748,8 +759,6 @@ fi
 
 # Delete detection: a previously synced card gone from the board.
 if [ "$TSV_EXISTED" = true ]; then
-  BOARD_ITEM_IDS="$TMP_DIR/board-item-ids"
-  jq -r '.data.user.projectV2.items.nodes[].id' "$BOARD_JSON" | sort -u >"$BOARD_ITEM_IDS"
   while IFS= read -r old_line; do
     [ -n "$old_line" ] || continue
     task_id=$(printf '%s' "$old_line" | awk -F '\t' '{print $1}')

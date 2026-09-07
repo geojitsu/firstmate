@@ -107,11 +107,12 @@ out=$(run_poll "$case_dir" "$fb" 2>&1)
 [ -z "$out" ] || fail "the same board edit woke firstmate twice: $out"
 pass "a board edit wakes firstmate only once"
 
-# Board change while a backlog change is pending -> re-baseline silently.
+# Board change while a backlog change is pending -> reconciliation wake.
 board_fixture Done P4 p4-priority > "$case_dir/board.json"
 cat >> "$case_dir/home/data/backlog.md" <<'EOF'
 - [ ] t2 - Another (repo: firstmate) (kind: ship) (since: 2026-09-06)
 EOF
 out=$(run_poll "$case_dir" "$fb" 2>&1)
-[ -z "$out" ] || fail "poll woke firstmate while a backlog change was pending: $out"
-pass "a board change with a pending backlog change re-baselines without waking"
+printf '%s\n' "$out" | grep -F 'Helm board and backlog both changed' >/dev/null \
+  || fail "a concurrent board and backlog change did not request reconciliation: $out"
+pass "a board change with a pending backlog change requests reconciliation"

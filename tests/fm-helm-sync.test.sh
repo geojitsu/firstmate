@@ -205,6 +205,9 @@ board_json "$(jq -n \
   '[$a]')" > "$case_dir/board.json"
 : > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
 run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "delete-detect run failed"
+if grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
+  fail "a deleted live card was recreated before delete detection"
+fi
 grep -F 'hold del-task --kind captain' "$case_dir/tasks-axi.log" >/dev/null \
   || fail "deleted card did not hold its live task for the captain: $(cat "$case_dir/tasks-axi.log")"
 grep -F $'\tcheck\thelm-card-deleted:del-task\t' "$case_dir/home/state/.wake-queue" >/dev/null \

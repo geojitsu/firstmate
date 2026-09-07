@@ -859,6 +859,13 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
         active_children:$active_all[:$child_n],
         decisions_open:$decisions_all[:$decisions_n],
         holds:$holds_all[:$queued_n],
+        dispatch_eligible:([$queued_all[]
+          | select(.state == "queued"
+              and ((.unresolved_blocker_ids // []) | length) == 0
+              and (.hold_reason == null)
+              and ((.deferred_marker // false) | not))
+          | {id,repo:(.repo // null),priority:(.priority // null),since:(.since // null),
+             captain_actionable:(.captain_actionable // false)}]),
         queued:([$queued_all[] | {id:(.id | trunc(120)),title:(.title | trunc(120)),
           blocked_by:((.blocked_by // null) | if . == null then null else trunc(120) end),
           blocked_by_ids:((.blocked_by_ids // []) | map(trunc(120))),
@@ -1121,6 +1128,7 @@ length == 1 and (.[0] |
   and (.invalidity | type) == "object" and (.invalidity.ids | type) == "array"
   and (.active_children | type) == "array" and (.decisions_open | type) == "array"
   and (.holds | type) == "array" and (.queued | type) == "array"
+  and ((.dispatch_eligible // []) | type) == "array"
   and (.landed | type) == "array" and (.endpoints | type) == "array"
   and (.counts | type) == "object" and (.omitted | type) == "array"
 )
@@ -1481,8 +1489,11 @@ secondmate_current_json() {  # <parent-tasks-json-file>
     | {registry:$registry,records:.}') || return 1
   total_registered=$(printf '%s' "$union" | jq '[.records[] | select(.registered)] | length')
   total=$(printf '%s' "$union" | jq '.records | length')
-  rows=$(printf '%s' "$union" | jq -c --argjson cap "$FM_SNAPSHOT_SECONDMATES" '(if $cap == 0 then .records else .records[:$cap] end)[]')
-  shown=$(printf '%s\n' "$rows" | grep -c . || true)
+  rows=$(printf '%s' "$union" | jq -c '.records[]')
+  shown=$total
+  if [ "$FM_SNAPSHOT_SECONDMATES" -ne 0 ] && [ "$shown" -gt "$FM_SNAPSHOT_SECONDMATES" ]; then
+    shown=$FM_SNAPSHOT_SECONDMATES
+  fi
   truncated=$((total - shown))
   if [ -n "$rows" ]; then
     prepare_remote_summary_collection "$rows" || return 1
@@ -1643,6 +1654,7 @@ secondmate_current_json() {  # <parent-tasks-json-file>
          freshness:{status:$summary_freshness,observed_at:$observed,age_seconds:$summary_age},
          active_children:$summary.active_children,
          decisions_open:$summary.decisions_open,holds:$summary.holds,queued:$summary.queued,
+         dispatch_eligible:$summary.dispatch_eligible,
          landed:$summary.landed,endpoints:$summary.endpoints,counts:$summary.counts,omitted:$summary.omitted,
          parent_event:{raw:($event.raw // ""),note:($event.note // ""),age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan,reconciliation:$reconciliation},
          terminal_evidence:$terminal,contradiction:$contradiction}' >> "$records_file" || return 1
@@ -1684,7 +1696,7 @@ secondmate_current_json() {  # <parent-tasks-json-file>
          reconcile_inventory:(if $summary_sampled then $summary.invalidity else null end),
          provenance:{selected:$provenance,structured_home:($home | if . == "" then null else . end),parent_event_role:"fallback-only-not-current"},
          freshness:{status:$freshness,observed_at:$observed,age_seconds:$event_age},
-         active_children:[],decisions_open:[],holds:[],queued:[],landed:[],endpoints:[],counts:{active_children:0,decisions_open:0,holds:0,queued:0,landed:0,endpoints:0},omitted:[],
+         active_children:[],decisions_open:[],holds:[],queued:[],dispatch_eligible:[],landed:[],endpoints:[],counts:{active_children:0,decisions_open:0,holds:0,queued:0,landed:0,endpoints:0},omitted:[],
          parent_event:{raw:($event.raw // ""),note:($event.note // ""),age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan},
          terminal_evidence:$terminal,contradiction:false}' >> "$records_file" || return 1
     fi
@@ -1695,11 +1707,12 @@ EOF
   jq -n \
     --slurpfile registry_input "$registry_file" \
     --slurpfile records "$records_file" \
+    --argjson cap "$FM_SNAPSHOT_SECONDMATES" \
     --argjson total_registered "$total_registered" \
     --argjson total "$total" \
     --argjson shown "$shown" \
     --argjson truncated "$truncated" \
-    '{registry:$registry_input[0],records:$records,total_registered:$total_registered,total:$total,shown:$shown,truncated:$truncated}'
+    '{registry:$registry_input[0],records:(if $cap == 0 then $records else $records[:$cap] end),dispatch_records:$records,total_registered:$total_registered,total:$total,shown:$shown,truncated:$truncated}'
 }
 
 secondmate_landed_from_current_json() {  # <secondmate-current-json-file>
@@ -1802,12 +1815,9 @@ jq -n \
           priority:(.priority // null), since:(.since // null),
           captain_actionable:(.captain_actionable // false)} ];
    def eligible_secondmates:
-     [ ($secondmate_current.records // [])[]
+     [ ($secondmate_current.dispatch_records // [])[]
        | .id as $hid
-       | (.queued // [])[]
-       | select(((.unresolved_blocker_ids // []) | length) == 0
-                and (.hold_reason == null)
-                and ((.deferred_marker // false) | not))
+       | (.dispatch_eligible // [])[]
        | {id, home:$hid, project:(.repo // null),
           priority:(.priority // null), since:(.since // null),
           captain_actionable:(.captain_actionable // false)} ];
@@ -1823,7 +1833,7 @@ jq -n \
      tasks:($tasks | map(. + {backlog:backlog_by_id(.id)})),
      main_inventory:$main_inventory,
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
-     secondmate_current:$secondmate_current,
+     secondmate_current:($secondmate_current | del(.dispatch_records)),
      secondmate_landed:$secondmate_landed,
      dispatch_order:dispatch_order,
      secondmate_guidance:{

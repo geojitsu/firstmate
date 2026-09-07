@@ -7,10 +7,10 @@
 # state/helm-board.check.sh matches its byte-static identity shim.
 #
 # Contract: "output => wake firstmate, silence => keep sleeping". It prints ONE
-# line only when the board changed AND no backlog change is pending (so the
-# ordinary sync is not about to run anyway); firstmate then runs
-# bin/fm-helm-sync.sh --force to read and reconcile the edit. It never mutates
-# the board or the backlog. It finishes well inside FM_CHECK_TIMEOUT.
+# line when the board changed; when a backlog change is pending, the line asks
+# firstmate to force a reconciliation rather than silently losing the board
+# edit. It never mutates the board or the backlog. It finishes well inside
+# FM_CHECK_TIMEOUT.
 #
 # Enable (firstmate, main home, once, alongside creating config/helm.json):
 #   printf 'exec "%s/bin/fm-helm-poll.sh" "$@"\n' "$FM_ROOT" > state/helm-board.check.sh
@@ -22,10 +22,8 @@
 # The signature folds, per card, the (Status, Priority, title, body) it shows,
 # plus the card count. Any captain edit to those changes it.
 #
-# Known limitation: when a backlog change is pending at the same moment as a
-# board edit, this poll re-baselines silently and the ordinary (non --force)
-# sync rewrites the card from the backlog, so that one board edit is not read
-# back. Re-applying it is a second board edit once the backlog is quiet.
+# When a board and backlog change coincide, the poll emits a reconciliation wake.
+# The forced sync leaves any field-level conflict for firstmate to resolve.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -155,7 +153,7 @@ fi
 store_signature || exit 0
 
 if [ "$BACKLOG_PENDING" -eq 1 ]; then
-  # Re-baselined above; the ordinary sync handles this cycle.
+  printf 'check: Helm board and backlog both changed; run bin/fm-helm-sync.sh --force to reconcile\n'
   exit 0
 fi
 
