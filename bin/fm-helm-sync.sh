@@ -105,6 +105,24 @@ helm_fail_open() {
   exit 0
 }
 
+run_gh_bounded() {
+  local seconds=$1 command_pid watchdog_pid status
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+    return
+  fi
+  "$@" &
+  command_pid=$!
+  ( sleep "$seconds"; kill "$command_pid" 2>/dev/null || true ) &
+  watchdog_pid=$!
+  wait "$command_pid"
+  status=$?
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  return "$status"
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --force)
@@ -226,12 +244,7 @@ while :; do
   [ -z "$CURSOR" ] || GH_ARGS+=(--field "cursor=$CURSOR")
   REMAINING=$(( PAGINATION_DEADLINE - $(date +%s) ))
   [ "$REMAINING" -gt 0 ] || helm_fail_open "GitHub project pagination timed out"
-  if command -v timeout >/dev/null 2>&1; then
-    GH_COMMAND=(timeout "$REMAINING" gh api graphql "${GH_ARGS[@]}")
-  else
-    GH_COMMAND=(gh api graphql "${GH_ARGS[@]}")
-  fi
-  if ! "${GH_COMMAND[@]}" >"$PAGE_JSON" 2>"$GH_ERROR"; then
+  if ! run_gh_bounded "$REMAINING" gh api graphql "${GH_ARGS[@]}" >"$PAGE_JSON" 2>"$GH_ERROR"; then
     helm_fail_open "GitHub project read failed"
   fi
   if jq -e '(.errors // []) | length > 0' "$PAGE_JSON" >/dev/null 2>&1; then
@@ -614,6 +627,10 @@ old_deleted_line() {
   awk -F '\t' -v t="$1" '$1 == t { print; exit }' "$OLD_DELETED"
 }
 
+retain_deleted_card() {
+  printf '%s\t%s\n' "$1" "$2" >>"$NEW_DELETED"
+}
+
 BOARD_ITEM_IDS="$TMP_DIR/board-item-ids"
 jq -r '.data.user.projectV2.items.nodes[].id' "$BOARD_JSON" | sort -u >"$BOARD_ITEM_IDS" \
   || helm_fail_open "could not index current Helm cards"
@@ -805,6 +822,7 @@ if [ "$record_count" -gt 0 ]; then
     [ "$current_status_id" = "$STATUS_DONE_ID" ] && continue
 
     if [ "$TSV_EXISTED" = true ] && [ -z "$(old_card_line "$task_id")" ]; then
+      # board-driven task creation is approved design - brief step 6 and scout report section 4 both specify that a captain-created card with no backlog task raises one check wake for ordinary firstmate intake
       # Never carded before and no backlog task: a brand-new captain card.
       queue_board_event "helm-new-card:$task_id" \
         "check: captain added Helm card $task_id with no backlog task; run intake" \
@@ -837,10 +855,12 @@ if [ "$TSV_EXISTED" = true ]; then
     fi
     task_state=$(jq -r '.state' <<<"$record")
     if [ "$task_state" = "done" ]; then
-      continue   # captain tidied a Done card: drop the line, no confirm.
+      retain_deleted_card "$task_id" "$old_item_id"
+      continue
     fi
     if [ "$(jq -r '.hold_kind // ""' <<<"$record")" = captain ]; then
-      continue   # already held for the captain: firstmate has it, do not re-ring.
+      retain_deleted_card "$task_id" "$old_item_id"
+      continue
     fi
 
     home_path=$(record_home_path "$task_id")
@@ -857,10 +877,10 @@ if [ "$TSV_EXISTED" = true ]; then
     if ! backlog_hold_for_captain "$home_path" "$task_id" "$reason"; then
       helm_fail_open "could not hold deleted Helm task $task_id"
     fi
-    printf '%s\t%s\n' "$task_id" "$old_item_id" >>"$NEW_DELETED"
+    retain_deleted_card "$task_id" "$old_item_id"
     queue_board_event "helm-card-deleted:$task_id" \
       "check: captain deleted Helm card $task_id ($choices)" \
-      || helm_fail_open "could not enqueue the Helm card deletion for $task_id"
+      || printf 'fm-helm-sync: could not enqueue the Helm card deletion for %s\n' "$task_id" >&2
   done <"$OLD_CARDS"
 fi
 

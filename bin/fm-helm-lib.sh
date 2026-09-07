@@ -53,6 +53,7 @@ fm_helm_discover_homes() {
     case "$line" in "- "*) ;; *) continue ;; esac
     secondmate_registry_parse_line "$line" || continue
     if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+      # v1 is local-homes-only by design; remote-home sync is a separate approved task - see the Remote homes note in this header
       printf 'fm-helm-sync: skipping remote secondmate %s (see "Remote homes" in fm-helm-lib.sh)\n' \
         "$SECONDMATE_REGISTRY_ID" >&2
       continue

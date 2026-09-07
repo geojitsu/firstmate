@@ -50,7 +50,10 @@ set -u
 if [ "${1:-}" = auth ]; then printf "%s\n" "Token scopes: 'project', 'repo'"; exit 0; fi
 if [ "${1:-}" = api ]; then
   case "$*" in
-    *cursor=page-2*) cat "$FM_FAKE_BOARD_PAGE_2" ;;
+    *cursor=page-2*)
+      [ -z "${FM_FAKE_GH_STALL_PAGE_2:-}" ] || sleep "$FM_FAKE_GH_STALL_PAGE_2"
+      cat "$FM_FAKE_BOARD_PAGE_2"
+      ;;
     *) cat "$FM_FAKE_BOARD" ;;
   esac
   exit 0
@@ -65,6 +68,18 @@ run_poll() {  # <case-dir> <fakebin>
   FM_HOME="$1/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$1/board.json" \
     FM_FAKE_BOARD_PAGE_2="${FM_FAKE_BOARD_PAGE_2:-}" \
     PATH="$2:$PATH" "$POLL"
+}
+
+run_poll_without_timeout() {  # <case-dir> <fakebin>
+  local portable_bin command
+  portable_bin="$1/portable-bin"
+  mkdir -p "$portable_bin"
+  for command in awk bash cat chmod date dirname env grep jq mktemp mv rm sed sha256sum sleep sort; do
+    ln -sf "$(command -v "$command")" "$portable_bin/$command"
+  done
+  ln -sf "$2/gh" "$portable_bin/gh"
+  FM_HOME="$1/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$1/board.json" \
+    FM_FAKE_BOARD_PAGE_2="$1/page-two.json" PATH="$portable_bin" "$POLL"
 }
 
 case_dir="$TMP_ROOT/main"
@@ -138,3 +153,18 @@ FM_FAKE_BOARD_PAGE_2="$case_dir/page-two.json" out=$(run_poll "$case_dir" "$fb" 
 printf '%s\n' "$out" | grep -F 'fm-helm-sync.sh --force' >/dev/null \
   || fail "a page-two board edit did not wake firstmate: $out"
 pass "the board poll detects an edit on a second project page"
+
+rm -f "$case_dir/home/state/.helm-board-poll"
+board_fixture Queued P3 p3-priority | jq '.data.user.projectV2.items.pageInfo={hasNextPage:true,endCursor:"page-2"}' > "$case_dir/board.json"
+board_fixture Queued P3 p3-priority > "$case_dir/page-two.json"
+started=$(date +%s)
+export FM_FAKE_GH_STALL_PAGE_2=21
+out=$(run_poll_without_timeout "$case_dir" "$fb" 2>&1) \
+  || fail "portable stalled poll exited nonzero: $out"
+unset FM_FAKE_GH_STALL_PAGE_2
+elapsed=$(( $(date +%s) - started ))
+[ -z "$out" ] || fail "portable stalled poll printed output: $out"
+[ "$elapsed" -le 22 ] || fail "portable stalled poll exceeded its overall deadline: ${elapsed}s"
+[ ! -e "$case_dir/home/state/.helm-board-poll" ] \
+  || fail "portable stalled poll published a partial board signature"
+pass "a stalled paginated poll gives up within one overall deadline"

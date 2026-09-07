@@ -289,6 +289,31 @@ fi
   || fail "a restored card did not clear its deletion tombstone"
 pass "a deleted card holds its live task for the captain and is not treated as new"
 
+held_delete_dir="$TMP_ROOT/delete-already-held"
+mkdir -p "$held_delete_dir/home/config" "$held_delete_dir/home/data" "$held_delete_dir/home/state"
+held_delete_fb=$(install_fakes "$held_delete_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$held_delete_dir/home/config/helm.json"
+cat > "$held_delete_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] captain-held-task - Captain-held task (repo: firstmate) (kind: ship) (since: 2026-09-05) (hold: captain review) (hold-kind: captain)
+## Done
+EOF
+board_json "$(jq -n --argjson item "$(draft_item captain-held-item captain-held-draft captain-held-task 'Captain-held task' 'x' Queued queued-status P3 p3-priority)" '[$item]')" > "$held_delete_dir/board.json"
+run_sync "$held_delete_dir" "$held_delete_fb" >/dev/null 2>&1 || fail "captain-held seed run failed"
+board_json '[]' > "$held_delete_dir/board.json"
+: > "$held_delete_dir/gh.log"
+run_sync "$held_delete_dir" "$held_delete_fb" --force >/dev/null 2>&1 || fail "captain-held deletion run failed"
+[ -s "$held_delete_dir/home/state/helm-deleted.tsv" ] \
+  || fail "captain-held deletion did not retain a tombstone"
+: > "$held_delete_dir/gh.log"
+run_sync "$held_delete_dir" "$held_delete_fb" --force >/dev/null 2>&1 || fail "captain-held follow-up sync failed"
+if grep -F 'addProjectV2DraftIssue' "$held_delete_dir/gh.log" >/dev/null; then
+  fail "a deleted captain-held card was recreated on the next sync"
+fi
+pass "a deleted captain-held card remains suppressed across syncs"
+
 # New, not yet carded: a board card with no backlog task and never seen before
 # is a new captain card, not a deletion and not closed to Done.
 board_json "$(jq -n \

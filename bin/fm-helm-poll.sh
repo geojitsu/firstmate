@@ -110,6 +110,24 @@ QUERY='query($owner:String!, $number:Int!, $cursor:String) {
   }
 }'
 
+run_gh_bounded() {
+  local seconds=$1 command_pid watchdog_pid status
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+    return
+  fi
+  "$@" &
+  command_pid=$!
+  ( sleep "$seconds"; kill "$command_pid" 2>/dev/null || true ) &
+  watchdog_pid=$!
+  wait "$command_pid"
+  status=$?
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  return "$status"
+}
+
 PAGE_COUNT=0
 CURSOR=
 PAGINATION_DEADLINE=$(( $(date +%s) + 20 ))
@@ -125,12 +143,7 @@ while :; do
   [ -z "$CURSOR" ] || GH_ARGS+=(--field "cursor=$CURSOR")
   REMAINING=$(( PAGINATION_DEADLINE - $(date +%s) ))
   [ "$REMAINING" -gt 0 ] || exit 0
-  if command -v timeout >/dev/null 2>&1; then
-    GH_COMMAND=(timeout "$REMAINING" gh api graphql "${GH_ARGS[@]}")
-  else
-    GH_COMMAND=(gh api graphql "${GH_ARGS[@]}")
-  fi
-  "${GH_COMMAND[@]}" >"$PAGE_JSON" 2>/dev/null || exit 0
+  run_gh_bounded "$REMAINING" gh api graphql "${GH_ARGS[@]}" >"$PAGE_JSON" 2>/dev/null || exit 0
   jq -e '(.errors // []) | length == 0' "$PAGE_JSON" >/dev/null 2>&1 || exit 0
   if [ "$PAGE_COUNT" -eq 1 ]; then
     mv -f -- "$PAGE_JSON" "$BOARD_JSON"
