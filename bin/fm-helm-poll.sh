@@ -110,10 +110,9 @@ QUERY='query($owner:String!, $number:Int!, $cursor:String) {
   }
 }'
 
-GH_TIMEOUT=()
-command -v timeout >/dev/null 2>&1 && GH_TIMEOUT=(timeout 20)
 PAGE_COUNT=0
 CURSOR=
+PAGINATION_DEADLINE=$(( $(date +%s) + 20 ))
 while :; do
   PAGE_COUNT=$((PAGE_COUNT + 1))
   [ "$PAGE_COUNT" -le 50 ] || exit 0
@@ -124,7 +123,14 @@ while :; do
     --field "number=$PROJECT_NUMBER"
   )
   [ -z "$CURSOR" ] || GH_ARGS+=(--field "cursor=$CURSOR")
-  "${GH_TIMEOUT[@]}" gh api graphql "${GH_ARGS[@]}" >"$PAGE_JSON" 2>/dev/null || exit 0
+  REMAINING=$(( PAGINATION_DEADLINE - $(date +%s) ))
+  [ "$REMAINING" -gt 0 ] || exit 0
+  if command -v timeout >/dev/null 2>&1; then
+    GH_COMMAND=(timeout "$REMAINING" gh api graphql "${GH_ARGS[@]}")
+  else
+    GH_COMMAND=(gh api graphql "${GH_ARGS[@]}")
+  fi
+  "${GH_COMMAND[@]}" >"$PAGE_JSON" 2>/dev/null || exit 0
   jq -e '(.errors // []) | length == 0' "$PAGE_JSON" >/dev/null 2>&1 || exit 0
   if [ "$PAGE_COUNT" -eq 1 ]; then
     mv -f -- "$PAGE_JSON" "$BOARD_JSON"

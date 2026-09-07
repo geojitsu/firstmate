@@ -213,6 +213,7 @@ GRAPHQL_QUERY='query($owner:String!, $number:Int!, $cursor:String) {
 
 PAGE_COUNT=0
 CURSOR=
+PAGINATION_DEADLINE=$(( $(date +%s) + 20 ))
 while :; do
   PAGE_COUNT=$((PAGE_COUNT + 1))
   [ "$PAGE_COUNT" -le 50 ] || helm_fail_open "GitHub project has more than 5000 items"
@@ -223,7 +224,14 @@ while :; do
     --field "number=$PROJECT_NUMBER"
   )
   [ -z "$CURSOR" ] || GH_ARGS+=(--field "cursor=$CURSOR")
-  if ! gh api graphql "${GH_ARGS[@]}" >"$PAGE_JSON" 2>"$GH_ERROR"; then
+  REMAINING=$(( PAGINATION_DEADLINE - $(date +%s) ))
+  [ "$REMAINING" -gt 0 ] || helm_fail_open "GitHub project pagination timed out"
+  if command -v timeout >/dev/null 2>&1; then
+    GH_COMMAND=(timeout "$REMAINING" gh api graphql "${GH_ARGS[@]}")
+  else
+    GH_COMMAND=(gh api graphql "${GH_ARGS[@]}")
+  fi
+  if ! "${GH_COMMAND[@]}" >"$PAGE_JSON" 2>"$GH_ERROR"; then
     helm_fail_open "GitHub project read failed"
   fi
   if jq -e '(.errors // []) | length > 0' "$PAGE_JSON" >/dev/null 2>&1; then
@@ -555,8 +563,11 @@ backlog_write_priority() {
 # Hold a task for the captain in its owning home after a card deletion. Idempotent.
 backlog_hold_for_captain() {
   local home=$1 task_id=$2 reason=$3
-  ( cd "$home" 2>/dev/null && FM_HOME="$home" tasks-axi hold "$task_id" --kind captain --reason "$reason" >/dev/null 2>&1 ) \
-    || printf 'fm-helm-sync: could not hold %s for the captain in %s\n' "$task_id" "$home" >&2
+  if ( cd "$home" 2>/dev/null && FM_HOME="$home" tasks-axi hold "$task_id" --kind captain --reason "$reason" >/dev/null 2>&1 ); then
+    return 0
+  fi
+  printf 'fm-helm-sync: could not hold %s for the captain in %s\n' "$task_id" "$home" >&2
+  return 1
 }
 
 fingerprint_of() {
@@ -645,7 +656,7 @@ while IFS= read -r record; do
 
   if [ "$card" = null ]; then
     deleted_line=$(old_deleted_line "$task_id")
-    if [ -n "$deleted_line" ] && [ "$(jq -r '.state' <<<"$record")" != done ]; then
+    if [ -n "$deleted_line" ]; then
       printf '%s\n' "$deleted_line" >>"$NEW_DELETED"
       continue
     fi
@@ -843,7 +854,9 @@ if [ "$TSV_EXISTED" = true ]; then
       choices='the task is queued: cancel it (Done), mark it done, or was the card deleted by mistake'
     fi
     reason="Helm card deleted; $choices."
-    backlog_hold_for_captain "$home_path" "$task_id" "$reason"
+    if ! backlog_hold_for_captain "$home_path" "$task_id" "$reason"; then
+      helm_fail_open "could not hold deleted Helm task $task_id"
+    fi
     printf '%s\t%s\n' "$task_id" "$old_item_id" >>"$NEW_DELETED"
     queue_board_event "helm-card-deleted:$task_id" \
       "check: captain deleted Helm card $task_id ($choices)" \
