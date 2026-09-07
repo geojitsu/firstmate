@@ -76,7 +76,8 @@ Only when no matching run exists does it consult semantic busy state; exact busy
 Decision-only events such as `resolved` never become current state or leak their prose into the current-state detail.
 In that status-log fallback, a declared external wait reports the distinct `paused` state with its reason.
 The semantic branch reports working only on an exact busy verdict and names the source that produced it; an unknown verdict never becomes working, never permits the status-log fallback, and never becomes a silent idle.
-For whole-fleet review, `bin/fm-fleet-snapshot.sh --json` emits schema `fm-fleet-snapshot.v1` from the backlog, task metadata, local current crew state, supervision-owned endpoint evidence, PR/report pointers, scout reports, bounded current summaries from registered secondmate homes, and secondmate return-channel guidance.
+For whole-fleet review, `bin/fm-fleet-snapshot.sh --json` emits schema `fm-fleet-snapshot.v1` from the backlog, task metadata, local current crew state, supervision-owned endpoint evidence, PR/report pointers, scout reports, bounded current summaries from registered secondmate homes, secondmate return-channel guidance, and `dispatch_order`.
+`dispatch_order` projects eligible queued work across the fleet in the order firstmate dispatches it.
 Each home atomically publishes that bounded home summary with freshness epoch metadata at `state/home-summary.json` after a locked session start, a watcher-observed status change, task spawn, task teardown, and on a recurring live-watcher cadence; `bin/fm-home-summary-refresh.sh` owns the publication mechanics.
 The fleet snapshot and Bearings paths use the concurrent remote-ledger collection, cache, unreadable-home disclosure, and remote-liveness boundary owned by `bin/fm-fleet-snapshot.sh`'s header.
 `bin/fm-fleet-view.sh` renders that snapshot as Markdown for humans, while `bin/fm-bearings-snapshot.sh` provides the bounded bearings projection, so both views consume one structured contract instead of reparsing raw fleet files.
@@ -323,16 +324,13 @@ It discovers every local secondmate home from `data/secondmates.md`, parses each
 A card is closed to Done only when its task id is in no home's backlog.
 Remote secondmate homes are out of scope for now; `bin/fm-helm-lib.sh` records the planned owner-marker path for when the first one appears.
 It resolves the project fields and option ids by name at runtime, so a board owner can rename the project or reorder its options without putting ids in the repository.
-The sync creates missing draft cards and keeps their content and the backlog-owned fields (Status, Priority, Project, Kind) in step with the backlog.
+The sync creates missing draft cards and keeps the backlog-owned fields in step with the backlog.
 It also tolerates a card the captain converted to a real repo issue: such a card keeps full field sync but its title and body are never rewritten.
 It never archives or deletes a card, and a malformed backlog parse fails open before any board mutation.
 
-The board is authoritative only for the captain's own edits, only for the fields below, and only on an explicit `--force` read.
-A captain edit to a card's Priority is written straight back into the owning backlog row.
-A move into the configured dispatch Status raises the existing one-shot dispatch `check` wake.
-A move to Done on a live task, a move backwards, a title or body edit, a brand-new captain card, and a deleted card each raise one `check` wake for ordinary firstmate intake; none of these mutate a backlog task mechanically and none spawn.
-`state/helm-cards.tsv` (mode 0600) maps every synced card to its task and is rebuilt from the board when absent, since every card carries `` `<task-id>` `` as body line 1; it is what tells a deleted card from one that was simply never carded.
-On a card deletion the sync holds the owning task for the captain and relays it through the normal captain-held path, offering cancel, mark done, or "deleted by mistake".
+An explicit `--force` read accepts approved captain board edits and routes unresolved changes through ordinary firstmate intake.
+The [Helm board sync configuration](configuration.md#helm-board-sync-confighelmjson) owns the field-authority and wake behavior.
+The script header owns the card identity cache and deletion-tombstone contract.
 
 `bin/fm-helm-poll.sh`, wired as a registered watcher check through `state/helm-board.check.sh`, is the wake path for an idle-board edit: a cheap read-only board read whose signature it compares to `state/.helm-board-poll`, printing one wake line only when the board changed and no backlog change is pending.
 On that wake firstmate runs `bin/fm-helm-sync.sh --force` and handles whatever the read turned up through intake.

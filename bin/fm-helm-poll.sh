@@ -10,7 +10,9 @@
 # line when the board changed; when a backlog change is pending, the line asks
 # firstmate to force a reconciliation rather than silently losing the board
 # edit. It never mutates the board or the backlog. It finishes well inside
-# FM_CHECK_TIMEOUT.
+# FM_CHECK_TIMEOUT. One 20-second deadline covers the whole paginated board
+# read. When `timeout` is unavailable, a watchdog stops the `gh` request at
+# that same deadline.
 #
 # Enable (firstmate, main home, once, alongside creating config/helm.json):
 #   printf 'exec "%s/bin/fm-helm-poll.sh" "$@"\n' "$FM_ROOT" > state/helm-board.check.sh

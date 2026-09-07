@@ -49,6 +49,9 @@
 # state/.helm-sync-backlog.sha256.  Use --force for an explicit board read when
 # the captain has edited a card without changing any backlog; --force still
 # never calls bin/fm-spawn.sh and never deletes a card.
+# One 20-second deadline covers the whole paginated GitHub board read. The
+# script uses `timeout` when available and otherwise stops the request with a
+# watchdog at the same deadline.
 #
 # ## Identity cache
 # state/helm-cards.tsv (mode 0600) maps every synced card:
@@ -57,6 +60,10 @@
 # the next run, because every card carries `<task-id>` as body line 1.  It is
 # used for delete detection and to skip unchanged cards.  A card whose body line
 # 1 is not a recognised `<id>` is refused and logged, never touched.
+# state/helm-deleted.tsv (mode 0600) retains a captain deletion tombstone while
+# that task remains in any discovered backlog. It suppresses recreation even
+# after the captain resolves the hold by marking the task Done. The tombstone
+# drops when the task leaves the backlog union or when a card for it reappears.
 #
 # ## Draft issues vs real issues
 # The sync creates draft issues.  It also tolerates a card the captain converted

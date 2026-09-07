@@ -131,7 +131,7 @@ The configured GitHub account needs the `project` scope, which provides the proj
 An absent `config/helm.json` makes the script exit 0 without reading any backlog or contacting GitHub.
 
 The sync discovers every local secondmate home from `data/secondmates.md` and reconciles the union of every home's `data/backlog.md` against the board, so a secondmate's cards are managed too and a card is closed to Done only when its task id is in no home's backlog.
-Remote secondmate homes are not handled yet; see the "Remote homes" note in `bin/fm-helm-sync.sh`.
+Remote secondmate homes are not handled yet; see the "Remote homes" note in `bin/fm-helm-lib.sh`.
 The normal Stop-hook invocation hashes every discovered backlog together and makes no network call when that combined hash matches the last successful sync.
 
 Field authority: `data/backlog.md` in the owning home is authoritative for a card's title, body, kind, repository, priority, and lifecycle status.
