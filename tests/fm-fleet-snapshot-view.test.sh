@@ -132,6 +132,59 @@ EOF
     "mode=ship"
 }
 
+test_dispatch_order_sorts_by_priority_then_since() {
+  local home out
+  home=$(make_home dispatch-order)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] p3-unset-old - Unset priority, older (repo: firstmate) (kind: ship) (since 2026-07-01)
+- [ ] p0-urgent - Urgent (repo: firstmate) (kind: ship) (priority: 0) (since 2026-08-10)
+- [ ] p2-mid - Elevated (repo: firstmate) (kind: ship) (priority: 2) (since 2026-08-01)
+- [ ] p2-mid-newer - Elevated, newer (repo: firstmate) (kind: ship) (priority: 2) (since 2026-08-05)
+- [ ] blocked-p0 - Urgent but blocked blocked-by: p0-urgent (repo: firstmate) (kind: ship) (priority: 0) (since 2026-08-01)
+- [ ] held-p1 - Urgent but held (repo: firstmate) (kind: ship) (priority: 1) (since 2026-08-01) (hold: captain must choose) (hold-kind: captain)
+
+## Done
+EOF
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "dispatch-order snapshot must succeed: $out"
+  printf '%s' "$out" | jq -e '
+    [.dispatch_order[].id] == ["p0-urgent","p2-mid","p2-mid-newer","p3-unset-old"]
+  ' >/dev/null \
+    || fail "dispatch_order wrong: $(printf '%s' "$out" | jq -c '.dispatch_order')"
+  printf '%s' "$out" | jq -e '
+    all(.dispatch_order[]; .home == "main" and .project == "firstmate")
+  ' >/dev/null \
+    || fail "dispatch_order entries missing home/project annotation: $out"
+  pass "dispatch_order ranks eligible queued work by priority then since, excluding blocked and held"
+}
+
+test_dispatch_order_reads_unbounded_secondmate_inventory() {
+  local home mate out queued
+  home=$(make_home dispatch-secondmate)
+  mate=$(make_home dispatch-secondmate-home)
+  mkdir -p "$mate/bin"
+  printf '%s\n' dispatch-mate > "$mate/.fm-secondmate-home"
+  cp "$ROOT/AGENTS.md" "$mate/AGENTS.md"
+  printf -- '- dispatch-mate - Dispatch inventory (home: %s; scope: snapshot test; projects: firstmate; added 2026-09-05)\n' \
+    "$mate" > "$home/data/secondmates.md"
+  queued=$(jq -n '[range(0;20) | {id:("p3-" + tostring),repo:"firstmate",priority:"3",since:("2026-08-" + (10 + . | tostring)),captain_actionable:false}] + [{id:"p0-after-bound",repo:"firstmate",priority:"0",since:"2026-09-01",captain_actionable:false}]')
+  jq -n --arg home "$mate" --argjson queued "$queued" '
+    {schema:"fm-secondmate-home-summary.v1",generated:"2026-09-05T00:00:00Z",generated_epoch:1788566400,
+     home:$home,valid:true,reason:null,invalidity:{kind:null,ids:[]},state:"no_active_work",
+     active_children:[],decisions_open:[],holds:[],queued:($queued[:20]),dispatch_eligible:$queued,
+     landed:[],endpoints:[],counts:{active_children:0,decisions_open:0,holds:0,queued:21,landed:0,endpoints:0},omitted:[{surface:"queued",count:1}]}
+  ' > "$mate/state/home-summary.json"
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "secondmate dispatch snapshot must succeed: $out"
+  printf '%s' "$out" | jq -e '
+    [.dispatch_order[].id] | index("p0-after-bound") == 0
+  ' >/dev/null || fail "dispatch order omitted a secondmate task outside its bounded queue: $out"
+  pass "dispatch_order includes an urgent task beyond a secondmate queue summary bound"
+}
+
 test_empty_fleet_json() {
   local home out view
   home=$(make_home empty)
@@ -1007,6 +1060,8 @@ EOF
   pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
+test_dispatch_order_sorts_by_priority_then_since
+test_dispatch_order_reads_unbounded_secondmate_inventory
 test_empty_fleet_json
 test_large_backlog_snapshot_inputs
 test_large_secondmate_summary_inputs

@@ -31,7 +31,9 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-remote-doctor.sh`    | Check, and with `--fix` repair, one remote account's second-mate readiness (remote job worker, Herdr, Aqua launch agents, PATH, and required tools) |
 | `fm-backlog-handoff.sh`  | Move queued backlog items into a secondmate home and durably wake its recorded receiver |
 | `fm-backlog-receive.sh`  | Idempotently ingest one confined remote handoff outbox through tasks-axi             |
-| `fm-helm-sync.sh`        | Reconcile the opt-in GitHub Project board from `data/backlog.md` and queue captain dispatch requests |
+| `fm-helm-sync.sh`        | Reconcile the opt-in GitHub Project board against every local home's `data/backlog.md`, accept captain board edits back on `--force`, and queue captain dispatch and delete-confirmation wakes |
+| `fm-helm-poll.sh`        | One cheap read-only poll for a captain edit to the Helm board; prints one wake line when the board changed and no backlog change is pending |
+| `fm-helm-lib.sh`         | Shared Helm helpers: local fleet home discovery, the one `data/backlog.md` parser, the combined debounce hash, and sha256 helpers |
 | `fm-captain-hold.sh`     | Hold tasks for the captain, record the captain's answers, gate investigation completion, and report record divergence between the status log and the backlog |
 | `fm-decision-hold.sh`    | One-release compatibility shim mapping the retired decision commands onto fm-captain-hold.sh |
 | `fm-brief.sh`            | Scaffold ship (explicit `--mode`), scout, secondmate-charter, and Herdr-lab briefs, with Captain's intent and Firstmate spec subsections on ship/scout |

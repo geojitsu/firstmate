@@ -1,8 +1,13 @@
 {
-  // Copy this file to config/helm.json and edit the values for this home.
-  // The real config/helm.json is local and gitignored.
+  // Copy this file to config/helm.json IN THE MAIN HOME and edit the values.
+  // The sync runs from the main home only and is the single writer of the
+  // board; it reconciles every local home's data/backlog.md (main plus each
+  // secondmate discovered from data/secondmates.md).
+  // The real config/helm.json is local and gitignored (the whole config/
+  // directory is excluded).
   // An absent config/helm.json disables Helm synchronization completely.
-  // The captain can set dispatch_status to another Status option name.
+  // "dispatch_status" is the Status option a captain moves a card into to ask
+  // firstmate to pick that task up; it defaults to "In flight".
   "owner": "geojitsu",
   "number": 2,
   "dispatch_status": "In flight"
