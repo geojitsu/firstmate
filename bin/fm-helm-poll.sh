@@ -40,9 +40,11 @@ SYNC_HASH_FILE="$STATE_PATH/.helm-sync-backlog.sha256"
 POLL_FILE="$STATE_PATH/.helm-board-poll"
 TMP_DIR=
 ACKNOWLEDGE=0
+POLL_TIMEOUT=20
 
 if [ "${1:-}" = --acknowledge ] && [ "$#" -eq 1 ]; then
   ACKNOWLEDGE=1
+  POLL_TIMEOUT=5
 elif [ "$#" -ne 0 ]; then
   exit 2
 fi
@@ -139,7 +141,7 @@ run_gh_bounded() {
 
 PAGE_COUNT=0
 CURSOR=
-PAGINATION_DEADLINE=$(( $(date +%s) + 20 ))
+PAGINATION_DEADLINE=$(( $(date +%s) + POLL_TIMEOUT ))
 while :; do
   PAGE_COUNT=$((PAGE_COUNT + 1))
   [ "$PAGE_COUNT" -le 50 ] || exit 0

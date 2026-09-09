@@ -96,6 +96,7 @@ if [ "${1:-}" = api ]; then
     *fields\(first:100\)*)
       cat "$FM_FAKE_BOARD" ;;
     *)
+      [ -z "${FM_FAKE_HELM_ACK_STALL:-}" ] || sleep "$FM_FAKE_HELM_ACK_STALL"
       if [ -n "${FM_FAKE_BOARD_AFTER_SYNC:-}" ]; then
         cat "$FM_FAKE_BOARD_AFTER_SYNC"
       else
@@ -134,6 +135,7 @@ run_sync() {  # <case-dir> <fakebin> [--force]
     FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
     FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
     FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
+    FM_FAKE_HELM_ACK_STALL="${FM_FAKE_HELM_ACK_STALL:-}" \
     PATH="$fb:$PATH" \
     "$SYNC" "${a[@]}"
 }
@@ -505,6 +507,29 @@ mv "$case_dir/after-sync-board.json" "$case_dir/board.json"
 out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post-sync poll failed: $out"
 [ -z "$out" ] || fail "a board write caused a false captain-edit wake: $out"
 pass "a backlog-driven board sync acknowledges the poll signature"
+
+case_dir="$TMP_ROOT/bounded-acknowledgement"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] bounded-task - Bounded acknowledgement (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+started=$(date +%s)
+out=$(FM_FAKE_HELM_ACK_STALL=6 run_sync "$case_dir" "$fb" 2>&1) \
+  || fail "sync with a delayed acknowledgement exited nonzero: $out"
+elapsed=$(( $(date +%s) - started ))
+[ "$elapsed" -le 7 ] || fail "acknowledgement exceeded its bounded window: ${elapsed}s"
+assert_contains "$out" "Helm board poll acknowledgement deferred" \
+  "a delayed acknowledgement did not surface a watcher diagnostic"
+[ -s "$case_dir/home/state/.helm-sync-backlog.sha256" ] \
+  || fail "a delayed acknowledgement did not publish the sync debounce state"
+pass "a delayed board acknowledgement is bounded and does not repeat sync writes"
 
 # ---------------------------------------------------------------------------
 # Watcher adapter: successful backlog changes are applied without creating a
