@@ -12,6 +12,7 @@ set -u
 
 SYNC="$ROOT/bin/fm-helm-sync.sh"
 WATCH="$ROOT/bin/fm-helm-watch.sh"
+POLL="$ROOT/bin/fm-helm-poll.sh"
 TMP_ROOT=$(fm_test_tmproot fm-helm-sync)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -92,8 +93,15 @@ if [ "${1:-}" = api ]; then
       printf '%s\n' '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"updated-item"}}}}' ;;
     *cursor=page-2*)
       cat "$FM_FAKE_BOARD_PAGE_2" ;;
-    *)
+    *fields\(first:100\)*)
       cat "$FM_FAKE_BOARD" ;;
+    *)
+      if [ -n "${FM_FAKE_BOARD_AFTER_SYNC:-}" ]; then
+        cat "$FM_FAKE_BOARD_AFTER_SYNC"
+      else
+        cat "$FM_FAKE_BOARD"
+      fi
+      ;;
   esac
   exit 0
 fi
@@ -125,8 +133,20 @@ run_sync() {  # <case-dir> <fakebin> [--force]
     FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
     FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
     FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
+    FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
     PATH="$fb:$PATH" \
     "$SYNC" "${a[@]}"
+}
+
+run_poll() {  # <case-dir> <fakebin>
+  local case_dir=$1 fb=$2
+  FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_BOARD="$case_dir/board.json" \
+    FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
+    FM_FAKE_GH_LOG="$case_dir/gh.log" \
+    PATH="$fb:$PATH" \
+    "$POLL"
 }
 
 run_watch() {  # <case-dir> <fakebin>
@@ -461,6 +481,31 @@ run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "debounce second run failed"
 [ "$(wc -l <"$case_dir/gh.log")" -eq "$before" ] || fail "an unchanged fleet backlog made a GitHub call"
 pass "an unchanged fleet backlog is debounced without a GitHub call"
 
+case_dir="$TMP_ROOT/poll-acknowledgement"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] acknowledged-task - Acknowledged task (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item ack-item ack-draft acknowledged-task 'Acknowledged task' 'x' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "initial acknowledgement sync failed"
+run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "initial acknowledgement poll failed"
+sed 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+  || fail "could not stage the in-flight backlog"
+mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+board_json "$(jq -n --argjson a "$(draft_item ack-item ack-draft acknowledged-task 'Acknowledged task' 'x' 'In flight' flight-status P3 p3-priority)" '[$a]')" > "$case_dir/after-sync-board.json"
+FM_FAKE_BOARD_AFTER_SYNC="$case_dir/after-sync-board.json" run_sync "$case_dir" "$fb" >/dev/null 2>&1 \
+  || fail "backlog-driven acknowledgement sync failed"
+mv "$case_dir/after-sync-board.json" "$case_dir/board.json"
+out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post-sync poll failed: $out"
+[ -z "$out" ] || fail "a board write caused a false captain-edit wake: $out"
+pass "a backlog-driven board sync acknowledges the poll signature"
+
 # ---------------------------------------------------------------------------
 # Watcher adapter: successful backlog changes are applied without creating a
 # wake, while a fail-open skip becomes check output for the watcher to surface.
@@ -496,6 +541,20 @@ FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_BOOTSTRAP_NETWORK=skip \
 [ -s "$case_dir/home/state/helm-board.check-trust" ] \
   || fail "bootstrap did not authenticate the Helm board poll check"
 pass "bootstrap arms the authenticated Helm watcher checks"
+
+rm -f "$case_dir/home/config/helm.json"
+override_state="$case_dir/override-state"
+mkdir -p "$override_state"
+mv "$case_dir/home/state/helm-sync.check.sh" "$case_dir/home/state/helm-sync.check-trust" \
+  "$case_dir/home/state/helm-board.check.sh" "$case_dir/home/state/helm-board.check-trust" "$override_state/"
+FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$override_state" FM_BOOTSTRAP_NETWORK=skip \
+  PATH="$fb:$PATH" "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1 \
+  || fail "bootstrap could not retire overridden Helm watcher checks"
+[ ! -e "$override_state/helm-sync.check.sh" ] && [ ! -e "$override_state/helm-sync.check-trust" ] \
+  || fail "bootstrap did not retire the overridden Helm sync check"
+[ ! -e "$override_state/helm-board.check.sh" ] && [ ! -e "$override_state/helm-board.check-trust" ] \
+  || fail "bootstrap did not retire the overridden Helm board check"
+pass "bootstrap retires Helm checks from the overridden state directory"
 
 case_dir="$TMP_ROOT/watcher-diagnostic"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"

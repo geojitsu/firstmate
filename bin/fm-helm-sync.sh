@@ -895,6 +895,12 @@ else
   rm -f -- "$DELETED_FILE"
 fi
 
+POLL_SIGNATURE=$(FM_HOME="$FM_HOME_PATH" FM_ROOT_OVERRIDE="$FM_ROOT_PATH" \
+  FM_CONFIG_OVERRIDE="$CONFIG_PATH" FM_DATA_OVERRIDE="$DATA_PATH" FM_STATE_OVERRIDE="$STATE_PATH" \
+  "$SCRIPT_DIR/fm-helm-poll.sh" --acknowledge) \
+  || helm_fail_open "could not acknowledge Helm board state"
+[ -n "$POLL_SIGNATURE" ] || helm_fail_open "could not acknowledge Helm board state"
+
 HASH_TMP=$(mktemp "$TMP_DIR/hash.XXXXXX") || helm_fail_open "could not stage Helm sync state"
 printf '%s\n' "$BACKLOG_HASH" >"$HASH_TMP" || helm_fail_open "could not write Helm sync state"
 chmod 0600 "$HASH_TMP" || helm_fail_open "could not protect Helm sync state"

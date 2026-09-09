@@ -1130,11 +1130,13 @@ helm_watch_setup() {
 
   if [ ! -f "$CONFIG/helm.json" ]; then
     if [ -e "$sync_shim" ] || [ -L "$sync_shim" ] || [ -e "$STATE/helm-sync.check-trust" ] || [ -L "$STATE/helm-sync.check-trust" ]; then
-      "$SCRIPT_DIR/fm-check-unregister.sh" helm-sync >/dev/null 2>&1 \
+      FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
+        "$SCRIPT_DIR/fm-check-unregister.sh" helm-sync >/dev/null 2>&1 \
         || echo "HELM: could not retire Helm watcher sync"
     fi
     if [ -e "$board_shim" ] || [ -L "$board_shim" ] || [ -e "$STATE/helm-board.check-trust" ] || [ -L "$STATE/helm-board.check-trust" ]; then
-      "$SCRIPT_DIR/fm-check-unregister.sh" helm-board >/dev/null 2>&1 \
+      FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
+        "$SCRIPT_DIR/fm-check-unregister.sh" helm-board >/dev/null 2>&1 \
         || echo "HELM: could not retire Helm watcher board poll"
     fi
     return 0

@@ -39,6 +39,13 @@ SECONDMATES_PATH="$DATA_PATH/secondmates.md"
 SYNC_HASH_FILE="$STATE_PATH/.helm-sync-backlog.sha256"
 POLL_FILE="$STATE_PATH/.helm-board-poll"
 TMP_DIR=
+ACKNOWLEDGE=0
+
+if [ "${1:-}" = --acknowledge ] && [ "$#" -eq 1 ]; then
+  ACKNOWLEDGE=1
+elif [ "$#" -ne 0 ]; then
+  exit 2
+fi
 
 poll_cleanup() {
   local status=$?
@@ -182,17 +189,28 @@ store_signature() {
   mv -f -- "$tmp" "$POLL_FILE"
 }
 
+acknowledge_signature() {
+  [ "$ACKNOWLEDGE" -eq 0 ] || printf '%s\n' "$SIGNATURE"
+}
+
 # First run (or a cleared snapshot): baseline silently, never wake.
 if [ ! -f "$POLL_FILE" ]; then
   store_signature
+  acknowledge_signature
   exit 0
 fi
 PREVIOUS=$(cat "$POLL_FILE" 2>/dev/null || true)
 if [ "$SIGNATURE" = "$PREVIOUS" ]; then
+  acknowledge_signature
   exit 0
 fi
 
 store_signature || exit 0
+
+if [ "$ACKNOWLEDGE" -eq 1 ]; then
+  acknowledge_signature
+  exit 0
+fi
 
 if [ "$BACKLOG_PENDING" -eq 1 ]; then
   printf 'check: Helm board and backlog both changed; run bin/fm-helm-sync.sh --force to reconcile\n'
