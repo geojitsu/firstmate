@@ -22,7 +22,8 @@
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
-#                 "FMX: X mode on ..." or "FMX: X mode off ...".
+#                 "FMX: X mode on ..." or "FMX: X mode off ...",
+#                 "HELM: could not arm|retire Helm watcher sync".
 #          When a RUNNING secondmate home is fast-forwarded, its target is
 #          firstmate's own current default-branch commit. A local worktree uses
 #          a purely local fast-forward with no origin fetch; a remote route hands
@@ -1117,6 +1118,36 @@ EOF
   echo "FMX: X mode on - relay poll armed via state/x-watch.check.sh; 30s watcher cadence in config/x-mode.env"
 }
 
+# Helm is a main-home-only board writer.  The authenticated watcher invokes this
+# generated check at its normal cadence; fm-helm-watch.sh stays silent after a
+# successful/debounced run and emits fail-open diagnostics for the watcher to
+# surface as durable check wakes.  The sync itself aggregates local secondmate
+# backlogs, so a secondmate needs no competing board writer or copied config.
+helm_watch_setup() {
+  local shim shim_body
+  shim="$STATE/helm-sync.check.sh"
+
+  if [ ! -f "$CONFIG/helm.json" ]; then
+    if [ -e "$shim" ] || [ -L "$shim" ] || [ -e "$STATE/helm-sync.check-trust" ] || [ -L "$STATE/helm-sync.check-trust" ]; then
+      "$SCRIPT_DIR/fm-check-unregister.sh" helm-sync >/dev/null 2>&1 \
+        || echo "HELM: could not retire Helm watcher sync"
+    fi
+    return 0
+  fi
+
+  mkdir -p "$STATE" 2>/dev/null || { echo "HELM: could not arm Helm watcher sync"; return 0; }
+  shim_body=$(cat <<EOF
+#!/usr/bin/env bash
+exec "$FM_ROOT/bin/fm-helm-watch.sh"
+EOF
+)
+  x_mode_write_if_changed "$shim" "$shim_body" 700 \
+    || { echo "HELM: could not arm Helm watcher sync"; return 0; }
+  FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-check-register.sh" helm-sync >/dev/null 2>&1 \
+    || echo "HELM: could not arm Helm watcher sync"
+}
+
 crew_dispatch_validate() {
   local file err
   file="$CONFIG/crew-dispatch.json"
@@ -1603,8 +1634,12 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
       fm_timing_record phase handoff-delivery "$__fm_timing_stamp"
     fi
   fi
-  # x_mode_setup writes local Relay artifacts only and never leaves the machine.
-  local_phase && x_mode_setup
+  # These setup steps write only home-local watcher artifacts and never leave
+  # the machine.
+  if local_phase; then
+    x_mode_setup
+    helm_watch_setup
+  fi
   if [ -n "$fleet_sync_pid" ]; then
     wait "$fleet_sync_pid" || true
     cat "$fleet_sync_out"

@@ -132,7 +132,10 @@ An absent `config/helm.json` makes the script exit 0 without reading any backlog
 
 The sync discovers every local secondmate home from `data/secondmates.md` and reconciles the union of every home's `data/backlog.md` against the board, so a secondmate's cards are managed too and a card is closed to Done only when its task id is in no home's backlog.
 Remote secondmate homes are not handled yet; see the "Remote homes" note in `bin/fm-helm-lib.sh`.
-The normal Stop-hook invocation hashes every discovered backlog together and makes no network call when that combined hash matches the last successful sync.
+Bootstrap automatically registers `state/helm-sync.check.sh` with the main home's watcher while this configuration exists.
+The watcher runs the sync at its ordinary check cadence, and the combined backlog hash avoids a GitHub call when no local home changed.
+That one main-home writer covers every discovered local secondmate backlog, so secondmates do not need copied Helm configuration or competing sync processes.
+If a fail-open sync skip would leave a backlog item unsynchronized, its diagnostic becomes a durable watcher `check` wake instead of being silent.
 
 Field authority: `data/backlog.md` in the owning home is authoritative for a card's title, body, kind, repository, priority, and lifecycle status.
 The board is authoritative only for the captain's own edits, only for Priority, Status, and card text, and only on an explicit `bin/fm-helm-sync.sh --force` read.

@@ -6,20 +6,6 @@
 # exits silently before reading any backlog, touching state, or making a network
 # call.
 #
-# Stop-hook wiring, documented for the captain to add to the untracked
-# .claude/settings.local.json (do not edit .claude/settings.json):
-#
-#   {
-#     "hooks": {
-#       "Stop": [{
-#         "hooks": [{
-#           "type": "command",
-#           "command": "[ -z \"${GROK_AGENT:-}${GROK_HOOK_EVENT:-}\" ] || exit 0; exec \"$CLAUDE_PROJECT_DIR\"/bin/fm-helm-sync.sh"
-#         }]
-#       }]
-#     }
-#   }
-#
 # ## Fleet-aware
 # The sync runs from the main home only and is the single writer of the board.
 # It discovers every LOCAL secondmate home from data/secondmates.md, parses each
@@ -44,8 +30,8 @@
 # rewritten from the backlog and no board edit is accepted back.
 #
 # ## Debounce
-# The normal Stop-hook path debounces all GitHub work on one SHA-256 hash over
-# every discovered home's data/backlog.md, stored in
+# The watcher-check path debounces all GitHub work on one SHA-256 hash over every
+# discovered home's data/backlog.md, stored in
 # state/.helm-sync-backlog.sha256.  Use --force for an explicit board read when
 # the captain has edited a card without changing any backlog; --force still
 # never calls bin/fm-spawn.sh and never deletes a card.
@@ -429,7 +415,8 @@ record_project() {
     firstmate|geojitsu/firstmate) printf '%s\n' firstmate ;;
     nocout|dc-noc/nocout) printf '%s\n' nocout ;;
     cryptoseacurrents|copium/cryptoseacurrents) printf '%s\n' cryptoseacurrents ;;
-    *) printf '%s\n' other ;;
+    other) printf '%s\n' other ;;
+    *) printf '%s\n' "$repo" ;;
   esac
 }
 

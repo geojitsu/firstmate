@@ -11,6 +11,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 SYNC="$ROOT/bin/fm-helm-sync.sh"
+WATCH="$ROOT/bin/fm-helm-watch.sh"
 TMP_ROOT=$(fm_test_tmproot fm-helm-sync)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -126,6 +127,20 @@ run_sync() {  # <case-dir> <fakebin> [--force]
     FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
     PATH="$fb:$PATH" \
     "$SYNC" "${a[@]}"
+}
+
+run_watch() {  # <case-dir> <fakebin>
+  local case_dir=$1 fb=$2
+  FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_BOARD="$case_dir/board.json" \
+    FM_FAKE_BOARD_PAGE_2="${FM_FAKE_BOARD_PAGE_2:-}" \
+    FM_FAKE_GH_LOG="$case_dir/gh.log" \
+    FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
+    FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
+    FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
+    PATH="$fb:$PATH" \
+    "$WATCH"
 }
 
 # ---------------------------------------------------------------------------
@@ -445,6 +460,56 @@ before=$(wc -l <"$case_dir/gh.log")
 run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "debounce second run failed"
 [ "$(wc -l <"$case_dir/gh.log")" -eq "$before" ] || fail "an unchanged fleet backlog made a GitHub call"
 pass "an unchanged fleet backlog is debounced without a GitHub call"
+
+# ---------------------------------------------------------------------------
+# Watcher adapter: successful backlog changes are applied without creating a
+# wake, while a fail-open skip becomes check output for the watcher to surface.
+# ---------------------------------------------------------------------------
+case_dir="$TMP_ROOT/watcher-trigger"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] watcher-task - Reaches the board automatically (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+out=$(run_watch "$case_dir" "$fb") || fail "watcher adapter exited nonzero: $out"
+[ -z "$out" ] || fail "successful watcher sync should stay silent: $out"
+grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null \
+  || fail "a new backlog item did not reach the board through the watcher adapter"
+pass "watcher adapter synchronizes a new backlog item without a wake"
+
+FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_BOOTSTRAP_NETWORK=skip \
+  PATH="$fb:$PATH" "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1 \
+  || fail "bootstrap could not arm the Helm watcher check"
+[ -x "$case_dir/home/state/helm-sync.check.sh" ] \
+  || fail "bootstrap did not install the Helm watcher check"
+[ -s "$case_dir/home/state/helm-sync.check-trust" ] \
+  || fail "bootstrap did not authenticate the Helm watcher check"
+pass "bootstrap arms the authenticated Helm watcher check"
+
+case_dir="$TMP_ROOT/watcher-diagnostic"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] unsupported-task - Must not disappear (repo: unrecognised-project) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+out=$(run_watch "$case_dir" "$fb") || fail "diagnostic watcher adapter exited nonzero: $out"
+assert_contains "$out" "unsupported project for unsupported-task" \
+  "an unsupported backlog project did not become watcher-visible diagnostic output"
+pass "watcher adapter exposes fail-open unsupported-project skips"
 
 for mode in no-config noauth scope network; do
   cd_dir="$TMP_ROOT/fail-$mode"

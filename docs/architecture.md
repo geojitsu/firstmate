@@ -328,6 +328,10 @@ The sync creates missing draft cards and keeps the backlog-owned fields in step 
 It also tolerates a card the captain converted to a real repo issue: such a card keeps full field sync but its title and body are never rewritten.
 It never archives or deletes a card, and a malformed backlog parse fails open before any board mutation.
 
+Bootstrap registers a main-home watcher check while `config/helm.json` exists.
+It invokes the ordinary sync at the watcher cadence, stays silent after a successful or debounced run, and turns any fail-open skip into a durable `check` wake.
+The single writer still aggregates each local secondmate backlog, which prevents competing board writes while keeping secondmate transitions convergent.
+
 An explicit `--force` read accepts approved captain board edits and routes unresolved changes through ordinary firstmate intake.
 The [Helm board sync configuration](configuration.md#helm-board-sync-confighelmjson) owns the field-authority and wake behavior.
 The script header owns the card identity cache and deletion-tombstone contract.
