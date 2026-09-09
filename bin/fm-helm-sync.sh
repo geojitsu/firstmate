@@ -395,7 +395,6 @@ guard_board_write() {
     printf 'check: Helm board and backlog both changed; run bin/fm-helm-sync.sh --force to reconcile\n'
     exit 0
   fi
-  WRITE_GUARD=false
 }
 
 graphql_mutation() {
@@ -410,15 +409,15 @@ graphql_mutation() {
 }
 
 ack_field() {
-  local item_id=$1 field=$2 name=$3 next
+  local item_id=$1 field=$2 name=$3 option_id=$4 next
   next="$ACK_BOARD_JSON.next"
-  jq --arg item "$item_id" --arg field "$field" --arg name "$name" '
+  jq --arg item "$item_id" --arg field "$field" --arg name "$name" --arg option "$option_id" '
     .data.user.projectV2.items.nodes |= map(
       if .id == $item then
         .fieldValues.nodes |=
           if any(.[]?; .field.name == $field) then
-            map(if .field.name == $field then .name = $name else . end)
-          else . + [{field:{name:$field},name:$name}] end
+            map(if .field.name == $field then .name = $name | .optionId = $option else . end)
+          else . + [{field:{name:$field},name:$name,optionId:$option}] end
       else . end)' "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON" || return 1
   if [ "$WRITE_ITEM_ID" = "$item_id" ]; then
     WRITE_CARD=$(jq -c --arg item "$item_id" '[.data.user.projectV2.items.nodes[] | select(.id == $item)][0]' "$ACK_BOARD_JSON") || return 1
@@ -898,7 +897,7 @@ while IFS= read -r record; do
     desired_status_option=$(option_id Status "$desired_status")
     update_single_select "$item_id" "$STATUS_FIELD_ID" "$desired_status_option" \
       || helm_fail_open "could not update Helm Status for $task_id"
-    ack_field "$item_id" Status "$desired_status" || helm_fail_open "could not stage Helm board acknowledgement"
+    ack_field "$item_id" Status "$desired_status" "$desired_status_option" || helm_fail_open "could not stage Helm board acknowledgement"
   fi
 
   current_project_id=$(current_option_id "$card" Project)
@@ -908,20 +907,20 @@ while IFS= read -r record; do
     update_single_select "$item_id" "$PROJECT_FIELD_ID" "$desired_project_option" \
       || helm_fail_open "could not update Helm Project for $task_id"
   if [ "$current_project_id" != "$desired_project_option" ]; then
-    ack_field "$item_id" Project "$desired_project" || helm_fail_open "could not stage Helm board acknowledgement"
+    ack_field "$item_id" Project "$desired_project" "$desired_project_option" || helm_fail_open "could not stage Helm board acknowledgement"
   fi
   [ "$current_kind_id" = "$desired_kind_option" ] || \
     update_single_select "$item_id" "$KIND_FIELD_ID" "$desired_kind_option" \
       || helm_fail_open "could not update Helm Kind for $task_id"
   if [ "$current_kind_id" != "$desired_kind_option" ]; then
-    ack_field "$item_id" Kind "$desired_kind" || helm_fail_open "could not stage Helm board acknowledgement"
+    ack_field "$item_id" Kind "$desired_kind" "$desired_kind_option" || helm_fail_open "could not stage Helm board acknowledgement"
   fi
   if [ "$push_priority" = true ]; then
     [ "$current_priority_id" = "$desired_priority_option" ] || \
       update_single_select "$item_id" "$PRIORITY_FIELD_ID" "$desired_priority_option" \
         || helm_fail_open "could not update Helm Priority for $task_id"
     if [ "$current_priority_id" != "$desired_priority_option" ]; then
-      ack_field "$item_id" Priority "$desired_priority" || helm_fail_open "could not stage Helm board acknowledgement"
+      ack_field "$item_id" Priority "$desired_priority" "$desired_priority_option" || helm_fail_open "could not stage Helm board acknowledgement"
     fi
   fi
 
@@ -967,7 +966,7 @@ if [ "$record_count" -gt 0 ]; then
     set_write_snapshot "$item_id" "$card"
     update_single_select "$item_id" "$STATUS_FIELD_ID" "$STATUS_DONE_ID" \
       || helm_fail_open "could not close the missing Helm task $task_id"
-    ack_field "$item_id" Status Done || helm_fail_open "could not stage Helm board acknowledgement"
+    ack_field "$item_id" Status Done "$STATUS_DONE_ID" || helm_fail_open "could not stage Helm board acknowledgement"
     marker_remove "$task_id" || helm_fail_open "could not clear the Helm dispatch marker for $task_id"
   done < <(jq -c '.data.user.projectV2.items.nodes[] | select(.content.__typename == "DraftIssue" or .content.__typename == "Issue")' "$BOARD_JSON")
 fi

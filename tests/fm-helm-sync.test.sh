@@ -88,20 +88,53 @@ if [ "${1:-}" = api ]; then
     *addProjectV2DraftIssue*)
       printf '%s\n' '{"data":{"addProjectV2DraftIssue":{"projectItem":{"id":"created-item","content":{"id":"created-draft"}}}}}' ;;
     *updateProjectV2DraftIssue*)
+      for arg in "$@"; do
+        case "$arg" in
+          draftIssueId=*) draft_id=${arg#draftIssueId=} ;;
+          title=*) draft_title=${arg#title=} ;;
+          body=*) draft_body=${arg#body=} ;;
+        esac
+      done
+      jq --arg id "$draft_id" --arg title "$draft_title" --arg body "$draft_body" '
+        .data.user.projectV2.items.nodes |= map(
+          if .content.id == $id then .content.title = $title | .content.body = $body else . end)' \
+        "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
+        && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+      if [ -n "${FM_FAKE_BOARD_AFTER_DRAFT:-}" ]; then
+        cp "$FM_FAKE_BOARD_AFTER_DRAFT" "$FM_FAKE_BOARD_STATE"
+      fi
       printf '%s\n' '{"data":{"updateProjectV2DraftIssue":{"draftIssue":{"id":"updated-draft"}}}}' ;;
     *updateProjectV2ItemFieldValue*)
       [ -z "${FM_FAKE_HELM_MUTATION_STALL:-}" ] || sleep "$FM_FAKE_HELM_MUTATION_STALL"
+      for arg in "$@"; do
+        case "$arg" in
+          itemId=*) item_id=${arg#itemId=} ;;
+          fieldId=*) field_id=${arg#fieldId=} ;;
+          optionId=*) option_id=${arg#optionId=} ;;
+        esac
+      done
+      jq --arg item "$item_id" --arg field "$field_id" --arg option "$option_id" '
+        (.data.user.projectV2.fields.nodes[] | select(.id == $field)) as $definition
+        | ($definition.options[] | select(.id == $option).name) as $name
+        | .data.user.projectV2.items.nodes |= map(
+            if .id == $item then
+              .fieldValues.nodes |=
+                if any(.[]?; .field.name == $definition.name) then
+                  map(if .field.name == $definition.name then .name = $name | .optionId = $option else . end)
+                else . + [{field:{name:$definition.name},name:$name,optionId:$option}] end
+            else . end)' "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
+        && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
       printf '%s\n' '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"updated-item"}}}}' ;;
     *cursor=page-2*)
       cat "$FM_FAKE_BOARD_PAGE_2" ;;
     *fields\(first:100\)*)
-      cat "$FM_FAKE_BOARD" ;;
+      cat "$FM_FAKE_BOARD_STATE" ;;
     *node\(id:\$itemId\)*)
       item_id=$(printf '%s\n' "$*" | sed -n 's/.*itemId=\([^ ]*\).*/\1/p')
       if [ -n "${FM_FAKE_BOARD_PREWRITE:-}" ]; then
         jq --arg id "$item_id" '{data:{node:([.data.user.projectV2.items.nodes[] | select(.id == $id)][0])}}' "$FM_FAKE_BOARD_PREWRITE"
       else
-        jq --arg id "$item_id" '{data:{node:([.data.user.projectV2.items.nodes[] | select(.id == $id)][0])}}' "$FM_FAKE_BOARD"
+        jq --arg id "$item_id" '{data:{node:([.data.user.projectV2.items.nodes[] | select(.id == $id)][0])}}' "$FM_FAKE_BOARD_STATE"
       fi ;;
     *)
       if [ -n "${FM_FAKE_BOARD_AFTER_SYNC:-}" ]; then
@@ -133,9 +166,11 @@ run_sync() {  # <case-dir> <fakebin> [--force]
   local case_dir=$1 fb=$2 arg=${3:-}
   local -a a=()
   [ -z "$arg" ] || a+=("$arg")
+  cp "$case_dir/board.json" "$case_dir/board-state.json"
   FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_BOARD="$case_dir/board.json" \
+    FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
     FM_FAKE_BOARD_PAGE_2="${FM_FAKE_BOARD_PAGE_2:-}" \
     FM_FAKE_GH_LOG="$case_dir/gh.log" \
     FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
@@ -143,6 +178,7 @@ run_sync() {  # <case-dir> <fakebin> [--force]
     FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
     FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
     FM_FAKE_BOARD_PREWRITE="${FM_FAKE_BOARD_PREWRITE:-}" \
+    FM_FAKE_BOARD_AFTER_DRAFT="${FM_FAKE_BOARD_AFTER_DRAFT:-}" \
     FM_FAKE_HELM_MUTATION_STALL="${FM_FAKE_HELM_MUTATION_STALL:-}" \
     PATH="$fb:$PATH" \
     "$SYNC" "${a[@]}"
@@ -150,9 +186,11 @@ run_sync() {  # <case-dir> <fakebin> [--force]
 
 run_poll() {  # <case-dir> <fakebin>
   local case_dir=$1 fb=$2
+  cp "$case_dir/board.json" "$case_dir/board-state.json"
   FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_BOARD="$case_dir/board.json" \
+    FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
     FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
     FM_FAKE_GH_LOG="$case_dir/gh.log" \
     PATH="$fb:$PATH" \
@@ -161,9 +199,11 @@ run_poll() {  # <case-dir> <fakebin>
 
 run_watch() {  # <case-dir> <fakebin>
   local case_dir=$1 fb=$2
+  cp "$case_dir/board.json" "$case_dir/board-state.json"
   FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_BOARD="$case_dir/board.json" \
+    FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
     FM_FAKE_BOARD_PAGE_2="${FM_FAKE_BOARD_PAGE_2:-}" \
     FM_FAKE_GH_LOG="$case_dir/gh.log" \
     FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
@@ -605,11 +645,45 @@ assert_contains "$out" "Helm board and backlog both changed" \
 if grep -F 'updateProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
   fail "a late pre-write board conflict rewrote the captain edit"
 fi
-grep -F 'Captain title' "$case_dir/prewrite-board.json" >/dev/null \
-  || fail "the late captain edit was not preserved"
 [ "$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")" = "$baseline_hash" ] \
   || fail "a late pre-write board conflict advanced the sync debounce state"
 pass "a late pre-write board conflict preserves the captain edit"
+
+case_dir="$TMP_ROOT/second-write-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] second-write-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item second-write-item second-write-draft second-write-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "second-write baseline sync failed"
+run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "second-write baseline poll failed"
+sed -e 's/Backlog title/Revised backlog title/' -e 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+  || fail "could not stage the second-write backlog"
+mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+board_json "$(jq -n --argjson a "$(draft_item second-write-item second-write-draft second-write-task 'Revised backlog title' "$conflict_body" 'Waiting on you' waiting-status P3 p3-priority)" '[$a]')" > "$case_dir/after-draft-board.json"
+: > "$case_dir/gh.log"
+out=$(FM_FAKE_BOARD_AFTER_DRAFT="$case_dir/after-draft-board.json" run_sync "$case_dir" "$fb" 2>&1) \
+  || fail "second-write conflict sync exited nonzero: $out"
+assert_contains "$out" "Helm board and backlog both changed" \
+  "a second-write board delta did not request reconciliation"
+grep -F 'updateProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null \
+  || fail "the draft mutation did not precede the second-write conflict"
+if grep -F 'updateProjectV2ItemFieldValue' "$case_dir/gh.log" >/dev/null; then
+  fail "a second board write overwrote the captain Status"
+fi
+jq -e '
+  .data.user.projectV2.items.nodes[]
+  | select(.id == "second-write-item")
+  | any(.fieldValues.nodes[]; .field.name == "Status" and .name == "Waiting on you")
+' "$case_dir/board-state.json" >/dev/null \
+  || fail "the stateful board did not retain the captain Status"
+pass "a second board write preserves the captain Status"
 
 case_dir="$TMP_ROOT/bounded-mutation"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
