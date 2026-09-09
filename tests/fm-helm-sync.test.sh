@@ -86,7 +86,24 @@ if [ "${1:-}" = api ]; then
   [ "${FM_FAKE_GH_MODE:-}" = network ] && exit 1
   case "$*" in
     *addProjectV2DraftIssue*)
-      printf '%s\n' '{"data":{"addProjectV2DraftIssue":{"projectItem":{"id":"created-item","content":{"id":"created-draft"}}}}}' ;;
+      for arg in "$@"; do
+        case "$arg" in
+          title=*) draft_title=${arg#title=} ;;
+          body=*) draft_body=${arg#body=} ;;
+        esac
+      done
+      jq --arg title "$draft_title" --arg body "$draft_body" '
+        .data.user.projectV2.items.nodes += [{
+          id:"created-item",
+          content:{__typename:"DraftIssue",id:"created-draft",title:$title,body:$body},
+          fieldValues:{nodes:[]}
+        }]' "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
+        && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+      jq -n --arg title "$draft_title" --arg body "$draft_body" '
+        {data:{addProjectV2DraftIssue:{projectItem:{
+          id:"created-item",
+          content:{__typename:"DraftIssue",id:"created-draft",title:$title,body:$body}
+        }}}}' ;;
     *updateProjectV2DraftIssue*)
       for arg in "$@"; do
         case "$arg" in

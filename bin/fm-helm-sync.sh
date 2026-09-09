@@ -358,6 +358,8 @@ TMP_RESPONSE_ERROR="$TMP_DIR/response.error"
 WRITE_ITEM_ID=
 WRITE_CARD=
 WRITE_GUARD=true
+CREATED_ITEM_ID=
+CREATED_CARD=
 
 board_item_snapshot() {
   jq -c '{
@@ -483,7 +485,13 @@ create_draft() {
   # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
   local query='mutation($projectId:ID!, $title:String!, $body:String!) {
     addProjectV2DraftIssue(input:{projectId:$projectId, title:$title, body:$body}) {
-      projectItem { id content { ... on DraftIssue { id } } }
+      projectItem {
+        id
+        content {
+          __typename
+          ... on DraftIssue { id title body }
+        }
+      }
     }
   }'
   graphql_mutation "$query" \
@@ -491,7 +499,9 @@ create_draft() {
     --field "title=$title" \
     --field "body=$body" \
     || return 1
-  jq -r '.data.addProjectV2DraftIssue.projectItem.id // empty' "$TMP_RESPONSE"
+  CREATED_CARD=$(jq -c '.data.addProjectV2DraftIssue.projectItem // null' "$TMP_RESPONSE") || return 1
+  CREATED_ITEM_ID=$(jq -r '.id // empty' <<<"$CREATED_CARD") || return 1
+  [ -n "$CREATED_ITEM_ID" ]
 }
 
 current_option_id() {
@@ -803,9 +813,10 @@ while IFS= read -r record; do
         continue
       fi
     fi
-    item_id=$(create_draft "$title" "$body") || helm_fail_open "could not create the Helm card for $task_id"
+    create_draft "$title" "$body" || helm_fail_open "could not create the Helm card for $task_id"
+    item_id=$CREATED_ITEM_ID
     [ -n "$item_id" ] || helm_fail_open "GitHub did not return the new Helm card for $task_id"
-    set_write_snapshot "$item_id" '{"content":{"title":"","body":""},"fieldValues":{"nodes":[]}}' false
+    set_write_snapshot "$item_id" "$CREATED_CARD"
     ack_new_draft "$item_id" "$title" "$body" || helm_fail_open "could not stage Helm board acknowledgement"
     content_type=draft
     content_node_id=""
