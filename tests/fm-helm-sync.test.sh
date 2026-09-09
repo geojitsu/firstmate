@@ -90,13 +90,13 @@ if [ "${1:-}" = api ]; then
     *updateProjectV2DraftIssue*)
       printf '%s\n' '{"data":{"updateProjectV2DraftIssue":{"draftIssue":{"id":"updated-draft"}}}}' ;;
     *updateProjectV2ItemFieldValue*)
+      [ -z "${FM_FAKE_HELM_MUTATION_STALL:-}" ] || sleep "$FM_FAKE_HELM_MUTATION_STALL"
       printf '%s\n' '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"updated-item"}}}}' ;;
     *cursor=page-2*)
       cat "$FM_FAKE_BOARD_PAGE_2" ;;
     *fields\(first:100\)*)
       cat "$FM_FAKE_BOARD" ;;
     *)
-      [ -z "${FM_FAKE_HELM_ACK_STALL:-}" ] || sleep "$FM_FAKE_HELM_ACK_STALL"
       if [ -n "${FM_FAKE_BOARD_AFTER_SYNC:-}" ]; then
         cat "$FM_FAKE_BOARD_AFTER_SYNC"
       else
@@ -135,7 +135,7 @@ run_sync() {  # <case-dir> <fakebin> [--force]
     FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
     FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
     FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
-    FM_FAKE_HELM_ACK_STALL="${FM_FAKE_HELM_ACK_STALL:-}" \
+    FM_FAKE_HELM_MUTATION_STALL="${FM_FAKE_HELM_MUTATION_STALL:-}" \
     PATH="$fb:$PATH" \
     "$SYNC" "${a[@]}"
 }
@@ -255,6 +255,22 @@ case_dir="$TMP_ROOT/delete"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
 printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+acknowledged_body=$(cat <<'EOF'
+
+## Facts
+
+- **Repo:** firstmate
+- **Type:** ship - produces a change and a PR
+- **Priority:** P3
+- **Filed:** 2026-09-09
+
+## Notes
+
+
+---
+_Source of truth: `data/backlog.md` in the owning firstmate home._
+EOF
+)
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
@@ -494,13 +510,13 @@ cat > "$case_dir/home/data/backlog.md" <<'EOF'
 - [ ] acknowledged-task - Acknowledged task (repo: firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
-board_json "$(jq -n --argjson a "$(draft_item ack-item ack-draft acknowledged-task 'Acknowledged task' 'x' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+board_json "$(jq -n --argjson a "$(draft_item ack-item ack-draft acknowledged-task 'Acknowledged task' "$acknowledged_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
 run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "initial acknowledgement sync failed"
 run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "initial acknowledgement poll failed"
 sed 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
   || fail "could not stage the in-flight backlog"
 mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
-board_json "$(jq -n --argjson a "$(draft_item ack-item ack-draft acknowledged-task 'Acknowledged task' 'x' 'In flight' flight-status P3 p3-priority)" '[$a]')" > "$case_dir/after-sync-board.json"
+board_json "$(jq -n --argjson a "$(draft_item ack-item ack-draft acknowledged-task 'Acknowledged task' "$acknowledged_body" 'In flight' flight-status P3 p3-priority)" '[$a]')" > "$case_dir/after-sync-board.json"
 FM_FAKE_BOARD_AFTER_SYNC="$case_dir/after-sync-board.json" run_sync "$case_dir" "$fb" >/dev/null 2>&1 \
   || fail "backlog-driven acknowledgement sync failed"
 mv "$case_dir/after-sync-board.json" "$case_dir/board.json"
@@ -508,28 +524,28 @@ out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post-sync poll failed: $out"
 [ -z "$out" ] || fail "a board write caused a false captain-edit wake: $out"
 pass "a backlog-driven board sync acknowledges the poll signature"
 
-case_dir="$TMP_ROOT/bounded-acknowledgement"
+case_dir="$TMP_ROOT/bounded-mutation"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
 printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
-## Queued
-- [ ] bounded-task - Bounded acknowledgement (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## In flight
+- [ ] bounded-task - Bounded mutation (repo: firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
-board_json '[]' > "$case_dir/board.json"
+board_json "$(jq -n --argjson a "$(draft_item bounded-item bounded-draft bounded-task 'Bounded mutation' 'x' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
 started=$(date +%s)
-out=$(FM_FAKE_HELM_ACK_STALL=6 run_sync "$case_dir" "$fb" 2>&1) \
-  || fail "sync with a delayed acknowledgement exited nonzero: $out"
+out=$(FM_FAKE_HELM_MUTATION_STALL=26 run_sync "$case_dir" "$fb" 2>&1) \
+  || fail "sync with a delayed mutation exited nonzero: $out"
 elapsed=$(( $(date +%s) - started ))
-[ "$elapsed" -le 7 ] || fail "acknowledgement exceeded its bounded window: ${elapsed}s"
-assert_contains "$out" "Helm board poll acknowledgement deferred" \
-  "a delayed acknowledgement did not surface a watcher diagnostic"
-[ -s "$case_dir/home/state/.helm-sync-backlog.sha256" ] \
-  || fail "a delayed acknowledgement did not publish the sync debounce state"
-pass "a delayed board acknowledgement is bounded and does not repeat sync writes"
+[ "$elapsed" -le 26 ] || fail "mutation exceeded the sync deadline: ${elapsed}s"
+assert_contains "$out" "could not update Helm Status" \
+  "a delayed mutation did not surface a watcher diagnostic"
+[ ! -e "$case_dir/home/state/.helm-sync-backlog.sha256" ] \
+  || fail "a timed-out mutation advanced the sync debounce state"
+pass "a delayed board mutation is bounded and remains retryable"
 
 # ---------------------------------------------------------------------------
 # Watcher adapter: successful backlog changes are applied without creating a
