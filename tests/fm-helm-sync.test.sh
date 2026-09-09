@@ -491,7 +491,11 @@ FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_BOOTSTRAP_NETWORK=skip \
   || fail "bootstrap did not install the Helm watcher check"
 [ -s "$case_dir/home/state/helm-sync.check-trust" ] \
   || fail "bootstrap did not authenticate the Helm watcher check"
-pass "bootstrap arms the authenticated Helm watcher check"
+[ -x "$case_dir/home/state/helm-board.check.sh" ] \
+  || fail "bootstrap did not install the Helm board poll check"
+[ -s "$case_dir/home/state/helm-board.check-trust" ] \
+  || fail "bootstrap did not authenticate the Helm board poll check"
+pass "bootstrap arms the authenticated Helm watcher checks"
 
 case_dir="$TMP_ROOT/watcher-diagnostic"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
@@ -507,9 +511,11 @@ EOF
 board_json '[]' > "$case_dir/board.json"
 : > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
 out=$(run_watch "$case_dir" "$fb") || fail "diagnostic watcher adapter exited nonzero: $out"
-assert_contains "$out" "unsupported project for unsupported-task" \
-  "an unsupported backlog project did not become watcher-visible diagnostic output"
-pass "watcher adapter exposes fail-open unsupported-project skips"
+assert_contains "$out" "unsupported repository unrecognised-project for unsupported-task; using other" \
+  "an unsupported backlog project did not emit its fallback diagnostic"
+grep -F 'optionId=other-project' "$case_dir/gh.log" >/dev/null \
+  || fail "an unsupported backlog project was not synced into the other bucket"
+pass "watcher adapter retains unsupported projects in the other bucket"
 
 for mode in no-config noauth scope network; do
   cd_dir="$TMP_ROOT/fail-$mode"

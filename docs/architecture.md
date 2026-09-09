@@ -328,15 +328,15 @@ The sync creates missing draft cards and keeps the backlog-owned fields in step 
 It also tolerates a card the captain converted to a real repo issue: such a card keeps full field sync but its title and body are never rewritten.
 It never archives or deletes a card, and a malformed backlog parse fails open before any board mutation.
 
-Bootstrap registers a main-home watcher check while `config/helm.json` exists.
-It invokes the ordinary sync at the watcher cadence, stays silent after a successful or debounced run, and turns any fail-open skip into a durable `check` wake.
+Bootstrap registers main-home sync and board-poll watcher checks while `config/helm.json` exists.
+The sync invokes the ordinary reconciliation at the watcher cadence, stays silent after a successful or debounced run, and turns any fail-open skip into a durable `check` wake; the authenticated board poll detects idle captain edits and requests the forced reconciliation.
 The single writer still aggregates each local secondmate backlog, which prevents competing board writes while keeping secondmate transitions convergent.
 
 An explicit `--force` read accepts approved captain board edits and routes unresolved changes through ordinary firstmate intake.
 The [Helm board sync configuration](configuration.md#helm-board-sync-confighelmjson) owns the field-authority and wake behavior.
 The script header owns the card identity cache and deletion-tombstone contract.
 
-`bin/fm-helm-poll.sh`, wired as a registered watcher check through `state/helm-board.check.sh`, is the wake path for an idle-board edit: a cheap read-only board read whose signature it compares to `state/.helm-board-poll`, printing one wake line only when the board changed and no backlog change is pending.
+`bin/fm-helm-poll.sh`, automatically wired as a registered watcher check through `state/helm-board.check.sh`, is the wake path for an idle-board edit: a cheap read-only board read whose signature it compares to `state/.helm-board-poll`, printing one wake line only when the board changed and no backlog change is pending.
 On that wake firstmate runs `bin/fm-helm-sync.sh --force` and handles whatever the read turned up through intake.
 The sync's durable markers and the queue keys make every board-driven wake idempotent across repeated runs.
 The real configuration is absent by default and lives in the home-local ignored `config/helm.json`, so upstream installations remain inert and `.claude/settings.json` stays untouched.

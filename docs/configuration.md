@@ -132,8 +132,8 @@ An absent `config/helm.json` makes the script exit 0 without reading any backlog
 
 The sync discovers every local secondmate home from `data/secondmates.md` and reconciles the union of every home's `data/backlog.md` against the board, so a secondmate's cards are managed too and a card is closed to Done only when its task id is in no home's backlog.
 Remote secondmate homes are not handled yet; see the "Remote homes" note in `bin/fm-helm-lib.sh`.
-Bootstrap automatically registers `state/helm-sync.check.sh` with the main home's watcher while this configuration exists.
-The watcher runs the sync at its ordinary check cadence, and the combined backlog hash avoids a GitHub call when no local home changed.
+Bootstrap automatically registers `state/helm-sync.check.sh` and `state/helm-board.check.sh` with the main home's watcher while this configuration exists.
+The watcher runs the sync and authenticated board poll at its ordinary check cadence, and the combined backlog hash avoids a GitHub call when no local home changed.
 That one main-home writer covers every discovered local secondmate backlog, so secondmates do not need copied Helm configuration or competing sync processes.
 If a fail-open sync skip would leave a backlog item unsynchronized, its diagnostic becomes a durable watcher `check` wake instead of being silent.
 
@@ -145,7 +145,7 @@ The script never deletes a card and never spawns work.
 The sync records each request with a durable marker and a queue key, so repeating the same board edit never enqueues duplicate wakes.
 `state/helm-cards.tsv` (mode 0600) is the card-to-task identity cache, rebuilt from the board when absent.
 
-`bin/fm-helm-poll.sh` is a registered watcher check (through `state/helm-board.check.sh`, bound with `bin/fm-check-register.sh helm-board`) that wakes firstmate to run `--force` when the captain edits a card while the backlog is quiet.
+`bin/fm-helm-poll.sh` is the automatically registered watcher check (through `state/helm-board.check.sh`, bound with `bin/fm-check-register.sh helm-board`) that wakes firstmate to run `--force` when the captain edits a card while the backlog is quiet.
 It is inert until `config/helm.json` exists.
 
 ## Runtime backend (config/backend / FM_BACKEND)

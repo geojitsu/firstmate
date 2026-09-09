@@ -1124,28 +1124,43 @@ EOF
 # surface as durable check wakes.  The sync itself aggregates local secondmate
 # backlogs, so a secondmate needs no competing board writer or copied config.
 helm_watch_setup() {
-  local shim shim_body
-  shim="$STATE/helm-sync.check.sh"
+  local sync_shim board_shim sync_body board_body
+  sync_shim="$STATE/helm-sync.check.sh"
+  board_shim="$STATE/helm-board.check.sh"
 
   if [ ! -f "$CONFIG/helm.json" ]; then
-    if [ -e "$shim" ] || [ -L "$shim" ] || [ -e "$STATE/helm-sync.check-trust" ] || [ -L "$STATE/helm-sync.check-trust" ]; then
+    if [ -e "$sync_shim" ] || [ -L "$sync_shim" ] || [ -e "$STATE/helm-sync.check-trust" ] || [ -L "$STATE/helm-sync.check-trust" ]; then
       "$SCRIPT_DIR/fm-check-unregister.sh" helm-sync >/dev/null 2>&1 \
         || echo "HELM: could not retire Helm watcher sync"
+    fi
+    if [ -e "$board_shim" ] || [ -L "$board_shim" ] || [ -e "$STATE/helm-board.check-trust" ] || [ -L "$STATE/helm-board.check-trust" ]; then
+      "$SCRIPT_DIR/fm-check-unregister.sh" helm-board >/dev/null 2>&1 \
+        || echo "HELM: could not retire Helm watcher board poll"
     fi
     return 0
   fi
 
   mkdir -p "$STATE" 2>/dev/null || { echo "HELM: could not arm Helm watcher sync"; return 0; }
-  shim_body=$(cat <<EOF
+  sync_body=$(cat <<EOF
 #!/usr/bin/env bash
 exec "$FM_ROOT/bin/fm-helm-watch.sh"
 EOF
 )
-  x_mode_write_if_changed "$shim" "$shim_body" 700 \
+  board_body=$(cat <<EOF
+#!/usr/bin/env bash
+exec "$FM_ROOT/bin/fm-helm-poll.sh"
+EOF
+)
+  x_mode_write_if_changed "$sync_shim" "$sync_body" 700 \
     || { echo "HELM: could not arm Helm watcher sync"; return 0; }
+  x_mode_write_if_changed "$board_shim" "$board_body" 700 \
+    || { echo "HELM: could not arm Helm watcher board poll"; return 0; }
   FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
     "$SCRIPT_DIR/fm-check-register.sh" helm-sync >/dev/null 2>&1 \
     || echo "HELM: could not arm Helm watcher sync"
+  FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-check-register.sh" helm-board >/dev/null 2>&1 \
+    || echo "HELM: could not arm Helm watcher board poll"
 }
 
 crew_dispatch_validate() {

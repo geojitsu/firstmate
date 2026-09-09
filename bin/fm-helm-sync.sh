@@ -407,8 +407,9 @@ record_kind() {
 }
 
 record_project() {
-  local repo
+  local repo task_id
   repo=$(jq -r '.repo // ""' <<<"$1")
+  task_id=$(jq -r '.id' <<<"$1")
   case "$repo" in
     firetabs|geojitsu/firetabs) printf '%s\n' firetabs ;;
     BetterBlueToo|geojitsu/BetterBlueToo) printf '%s\n' BetterBlueToo ;;
@@ -416,7 +417,10 @@ record_project() {
     nocout|dc-noc/nocout) printf '%s\n' nocout ;;
     cryptoseacurrents|copium/cryptoseacurrents) printf '%s\n' cryptoseacurrents ;;
     other) printf '%s\n' other ;;
-    *) printf '%s\n' "$repo" ;;
+    *)
+      printf 'fm-helm-sync: unsupported repository %s for %s; using other\n' "$repo" "$task_id" >&2
+      printf '%s\n' other
+      ;;
   esac
 }
 
@@ -638,10 +642,6 @@ while IFS= read -r record; do
   desired_project=$(record_project "$record")
   desired_kind=$(record_kind "$record")
   desired_status=$(record_status "$record")
-  case "$desired_project" in
-    firetabs|BetterBlueToo|firstmate|nocout|cryptoseacurrents|other) ;;
-    *) helm_fail_open "unsupported project for $task_id" ;;
-  esac
   desired_priority_n=$(jq -r '.priority // "3"' <<<"$record")
   desired_priority=$(priority_option_name "$desired_priority_n")
   desired_project_option=$(option_id Project "$desired_project")

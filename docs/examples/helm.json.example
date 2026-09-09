@@ -6,8 +6,9 @@
   // The real config/helm.json is local and gitignored (the whole config/
   // directory is excluded).
   // An absent config/helm.json disables Helm synchronization completely.
-  // Bootstrap registers a main-home watcher check automatically while this
-  // config exists. It covers every discovered local secondmate backlog too.
+  // Bootstrap registers main-home sync and board-poll watcher checks
+  // automatically while this config exists. They cover every discovered local
+  // secondmate backlog too.
   // "dispatch_status" is the Status option a captain moves a card into to ask
   // firstmate to pick that task up; it defaults to "In flight".
   "owner": "geojitsu",
