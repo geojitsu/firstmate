@@ -223,6 +223,29 @@ GRAPHQL_QUERY='query($owner:String!, $number:Int!, $cursor:String) {
   }
 }'
 
+ITEM_GRAPHQL_QUERY='query($itemId:ID!) {
+  node(id:$itemId) {
+    ... on ProjectV2Item {
+      id
+      content {
+        __typename
+        ... on DraftIssue { id title body }
+        ... on Issue { id title body number url }
+      }
+      fieldValues(first:30) {
+        nodes {
+          __typename
+          ... on ProjectV2ItemFieldSingleSelectValue {
+            name
+            optionId
+            field { ... on ProjectV2SingleSelectField { name } }
+          }
+        }
+      }
+    }
+  }
+}'
+
 SYNC_DEADLINE=$(( $(date +%s) + 25 ))
 PAGE_COUNT=0
 CURSOR=
@@ -332,6 +355,48 @@ DISPATCH_OPTION_ID=$(option_id Status "$DISPATCH_STATUS")
 
 TMP_RESPONSE="$TMP_DIR/response.json"
 TMP_RESPONSE_ERROR="$TMP_DIR/response.error"
+WRITE_ITEM_ID=
+WRITE_CARD=
+WRITE_GUARD=true
+
+board_item_snapshot() {
+  jq -c '{
+    title:(.content.title // ""),
+    body:(.content.body // ""),
+    fields:([.fieldValues.nodes[]?
+      | {field:(.field.name // ""),name:(.name // ""),optionId:(.optionId // "")}
+      | select(.field != "")]
+      | sort_by(.field, .optionId, .name))
+  }' | fm_helm_sha256_stdin
+}
+
+set_write_snapshot() {
+  WRITE_ITEM_ID=$1
+  WRITE_CARD=$2
+  WRITE_GUARD=${3:-true}
+}
+
+guard_board_write() {
+  local item_id=$1 remaining expected actual current
+  [ "$WRITE_ITEM_ID" = "$item_id" ] || return 1
+  [ "$WRITE_GUARD" = true ] || return 0
+  remaining=$(( SYNC_DEADLINE - $(date +%s) ))
+  [ "$remaining" -gt 0 ] || return 1
+  if ! run_gh_bounded "$remaining" gh api graphql \
+    --field "query=$ITEM_GRAPHQL_QUERY" \
+    --field "itemId=$item_id" >"$TMP_RESPONSE" 2>"$TMP_RESPONSE_ERROR"; then
+    return 1
+  fi
+  jq -e '((.errors // []) | length == 0) and (.data.node != null)' "$TMP_RESPONSE" >/dev/null 2>&1 || return 1
+  current=$(jq -c '.data.node' "$TMP_RESPONSE") || return 1
+  expected=$(printf '%s\n' "$WRITE_CARD" | board_item_snapshot) || return 1
+  actual=$(printf '%s\n' "$current" | board_item_snapshot) || return 1
+  if [ "$expected" != "$actual" ]; then
+    printf 'check: Helm board and backlog both changed; run bin/fm-helm-sync.sh --force to reconcile\n'
+    exit 0
+  fi
+  WRITE_GUARD=false
+}
 
 graphql_mutation() {
   local query=$1 remaining
@@ -354,7 +419,10 @@ ack_field() {
           if any(.[]?; .field.name == $field) then
             map(if .field.name == $field then .name = $name else . end)
           else . + [{field:{name:$field},name:$name}] end
-      else . end)' "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON"
+      else . end)' "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON" || return 1
+  if [ "$WRITE_ITEM_ID" = "$item_id" ]; then
+    WRITE_CARD=$(jq -c --arg item "$item_id" '[.data.user.projectV2.items.nodes[] | select(.id == $item)][0]' "$ACK_BOARD_JSON") || return 1
+  fi
 }
 
 ack_draft() {
@@ -363,7 +431,10 @@ ack_draft() {
   jq --arg item "$item_id" --arg title "$title" --arg body "$body" '
     .data.user.projectV2.items.nodes |= map(
       if .id == $item then .content.title = $title | .content.body = $body else . end)' \
-    "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON"
+    "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON" || return 1
+  if [ "$WRITE_ITEM_ID" = "$item_id" ]; then
+    WRITE_CARD=$(jq -c --arg item "$item_id" '[.data.user.projectV2.items.nodes[] | select(.id == $item)][0]' "$ACK_BOARD_JSON") || return 1
+  fi
 }
 
 ack_new_draft() {
@@ -371,11 +442,15 @@ ack_new_draft() {
   next="$ACK_BOARD_JSON.next"
   jq --arg item "$item_id" --arg title "$title" --arg body "$body" '
     .data.user.projectV2.items.nodes += [{id:$item,content:{title:$title,body:$body},fieldValues:{nodes:[]}}]' \
-    "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON"
+    "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON" || return 1
+  if [ "$WRITE_ITEM_ID" = "$item_id" ]; then
+    WRITE_CARD=$(jq -c --arg item "$item_id" '[.data.user.projectV2.items.nodes[] | select(.id == $item)][0]' "$ACK_BOARD_JSON") || return 1
+  fi
 }
 
 update_single_select() {
   local item_id=$1 field=$2 option=$3
+  guard_board_write "$item_id" || return 1
   # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
   local query='mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $optionId:String!) {
     updateProjectV2ItemFieldValue(input:{projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{singleSelectOptionId:$optionId}}) {
@@ -390,7 +465,8 @@ update_single_select() {
 }
 
 update_draft() {
-  local draft_id=$1 title=$2 body=$3
+  local item_id=$1 draft_id=$2 title=$3 body=$4
+  guard_board_write "$item_id" || return 1
   # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
   local query='mutation($draftIssueId:ID!, $title:String!, $body:String!) {
     updateProjectV2DraftIssue(input:{draftIssueId:$draftIssueId, title:$title, body:$body}) {
@@ -730,6 +806,7 @@ while IFS= read -r record; do
     fi
     item_id=$(create_draft "$title" "$body") || helm_fail_open "could not create the Helm card for $task_id"
     [ -n "$item_id" ] || helm_fail_open "GitHub did not return the new Helm card for $task_id"
+    set_write_snapshot "$item_id" '{"content":{"title":"","body":""},"fieldValues":{"nodes":[]}}' false
     ack_new_draft "$item_id" "$title" "$body" || helm_fail_open "could not stage Helm board acknowledgement"
     content_type=draft
     content_node_id=""
@@ -743,6 +820,7 @@ while IFS= read -r record; do
     else
       content_type=draft
     fi
+    set_write_snapshot "$item_id" "$card"
 
     old_line=$(old_card_line "$task_id")
     old_fp=$(printf '%s' "$old_line" | awk -F '\t' '{print $5}')
@@ -765,7 +843,7 @@ while IFS= read -r record; do
     elif [ "$current_title" != "$title" ] || [ "$current_body" != "$body" ]; then
       draft_id=$content_node_id
       [ -n "$draft_id" ] || helm_fail_open "Helm card $task_id has no draft issue id"
-      update_draft "$draft_id" "$title" "$body" \
+      update_draft "$item_id" "$draft_id" "$title" "$body" \
         || helm_fail_open "could not update the Helm card content for $task_id"
       ack_draft "$item_id" "$title" "$body" || helm_fail_open "could not stage Helm board acknowledgement"
     fi
@@ -829,9 +907,15 @@ while IFS= read -r record; do
   [ "$current_project_id" = "$desired_project_option" ] || \
     update_single_select "$item_id" "$PROJECT_FIELD_ID" "$desired_project_option" \
       || helm_fail_open "could not update Helm Project for $task_id"
+  if [ "$current_project_id" != "$desired_project_option" ]; then
+    ack_field "$item_id" Project "$desired_project" || helm_fail_open "could not stage Helm board acknowledgement"
+  fi
   [ "$current_kind_id" = "$desired_kind_option" ] || \
     update_single_select "$item_id" "$KIND_FIELD_ID" "$desired_kind_option" \
       || helm_fail_open "could not update Helm Kind for $task_id"
+  if [ "$current_kind_id" != "$desired_kind_option" ]; then
+    ack_field "$item_id" Kind "$desired_kind" || helm_fail_open "could not stage Helm board acknowledgement"
+  fi
   if [ "$push_priority" = true ]; then
     [ "$current_priority_id" = "$desired_priority_option" ] || \
       update_single_select "$item_id" "$PRIORITY_FIELD_ID" "$desired_priority_option" \
@@ -880,6 +964,7 @@ if [ "$record_count" -gt 0 ]; then
       continue
     fi
 
+    set_write_snapshot "$item_id" "$card"
     update_single_select "$item_id" "$STATUS_FIELD_ID" "$STATUS_DONE_ID" \
       || helm_fail_open "could not close the missing Helm task $task_id"
     ack_field "$item_id" Status Done || helm_fail_open "could not stage Helm board acknowledgement"

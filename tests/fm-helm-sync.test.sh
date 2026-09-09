@@ -96,6 +96,13 @@ if [ "${1:-}" = api ]; then
       cat "$FM_FAKE_BOARD_PAGE_2" ;;
     *fields\(first:100\)*)
       cat "$FM_FAKE_BOARD" ;;
+    *node\(id:\$itemId\)*)
+      item_id=$(printf '%s\n' "$*" | sed -n 's/.*itemId=\([^ ]*\).*/\1/p')
+      if [ -n "${FM_FAKE_BOARD_PREWRITE:-}" ]; then
+        jq --arg id "$item_id" '{data:{node:([.data.user.projectV2.items.nodes[] | select(.id == $id)][0])}}' "$FM_FAKE_BOARD_PREWRITE"
+      else
+        jq --arg id "$item_id" '{data:{node:([.data.user.projectV2.items.nodes[] | select(.id == $id)][0])}}' "$FM_FAKE_BOARD"
+      fi ;;
     *)
       if [ -n "${FM_FAKE_BOARD_AFTER_SYNC:-}" ]; then
         cat "$FM_FAKE_BOARD_AFTER_SYNC"
@@ -135,6 +142,7 @@ run_sync() {  # <case-dir> <fakebin> [--force]
     FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
     FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
     FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
+    FM_FAKE_BOARD_PREWRITE="${FM_FAKE_BOARD_PREWRITE:-}" \
     FM_FAKE_HELM_MUTATION_STALL="${FM_FAKE_HELM_MUTATION_STALL:-}" \
     PATH="$fb:$PATH" \
     "$SYNC" "${a[@]}"
@@ -569,6 +577,39 @@ fi
 [ "$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")" = "$baseline_hash" ] \
   || fail "a pre-write board conflict advanced the sync debounce state"
 pass "a pre-write board conflict preserves the captain edit"
+
+case_dir="$TMP_ROOT/late-prewrite-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] late-conflict-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item late-conflict-item late-conflict-draft late-conflict-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "late conflict baseline sync failed"
+run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "late conflict baseline poll failed"
+baseline_hash=$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")
+sed 's/Backlog title/Revised backlog title/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+  || fail "could not stage the late conflict backlog"
+mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+board_json "$(jq -n --argjson a "$(draft_item late-conflict-item late-conflict-draft late-conflict-task 'Captain title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/prewrite-board.json"
+: > "$case_dir/gh.log"
+out=$(FM_FAKE_BOARD_PREWRITE="$case_dir/prewrite-board.json" run_sync "$case_dir" "$fb" 2>&1) \
+  || fail "late pre-write conflict sync exited nonzero: $out"
+assert_contains "$out" "Helm board and backlog both changed" \
+  "a late board delta did not request reconciliation"
+if grep -F 'updateProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
+  fail "a late pre-write board conflict rewrote the captain edit"
+fi
+grep -F 'Captain title' "$case_dir/prewrite-board.json" >/dev/null \
+  || fail "the late captain edit was not preserved"
+[ "$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")" = "$baseline_hash" ] \
+  || fail "a late pre-write board conflict advanced the sync debounce state"
+pass "a late pre-write board conflict preserves the captain edit"
 
 case_dir="$TMP_ROOT/bounded-mutation"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
