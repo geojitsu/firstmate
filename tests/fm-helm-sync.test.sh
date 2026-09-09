@@ -524,6 +524,52 @@ out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post-sync poll failed: $out"
 [ -z "$out" ] || fail "a board write caused a false captain-edit wake: $out"
 pass "a backlog-driven board sync acknowledges the poll signature"
 
+case_dir="$TMP_ROOT/prewrite-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] conflict-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+conflict_body=$(cat <<'EOF'
+
+## Facts
+
+- **Repo:** firstmate
+- **Type:** ship - produces a change and a PR
+- **Priority:** P3
+- **Filed:** 2026-09-09
+
+## Notes
+
+
+---
+_Source of truth: `data/backlog.md` in the owning firstmate home._
+EOF
+)
+board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft conflict-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "conflict baseline sync failed"
+run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "conflict baseline poll failed"
+baseline_hash=$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")
+sed 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+  || fail "could not stage the conflict backlog"
+mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft conflict-task 'Captain title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "pre-write conflict sync exited nonzero: $out"
+assert_contains "$out" "Helm board and backlog both changed" \
+  "a board delta since poll baseline did not request reconciliation"
+if grep -F 'updateProjectV2' "$case_dir/gh.log" >/dev/null || grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
+  fail "a pre-write board conflict mutated the board"
+fi
+[ "$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")" = "$baseline_hash" ] \
+  || fail "a pre-write board conflict advanced the sync debounce state"
+pass "a pre-write board conflict preserves the captain edit"
+
 case_dir="$TMP_ROOT/bounded-mutation"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")

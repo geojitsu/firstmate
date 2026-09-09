@@ -266,6 +266,19 @@ while :; do
   [ -n "$CURSOR" ] || helm_fail_open "GitHub project item page is missing its cursor"
 done
 
+READ_SIGNATURE=$(jq -r '
+  def fieldval($n): [.fieldValues.nodes[]? | select(.field.name == $n) | .name][0] // "";
+  [ .data.user.projectV2.items.nodes[]
+    | .id + "\u001f" + fieldval("Status") + "\u001f" + fieldval("Priority")
+      + "\u001f" + ((.content.title // "") | @base64)
+      + "\u001f" + ((.content.body // "") | @base64) ]
+  | (length | tostring) + "\n" + (sort | join("\n"))
+' "$BOARD_JSON" | fm_helm_sha256_stdin) || helm_fail_open "could not read Helm board signature"
+if [ "$FORCE" -eq 0 ] && [ -f "$POLL_FILE" ] && [ "$(sed -n '1p' "$POLL_FILE" 2>/dev/null)" != "$READ_SIGNATURE" ]; then
+  printf 'check: Helm board and backlog both changed; run bin/fm-helm-sync.sh --force to reconcile\n'
+  exit 0
+fi
+
 ACK_BOARD_JSON="$TMP_DIR/ack-board.json"
 cp "$BOARD_JSON" "$ACK_BOARD_JSON" || helm_fail_open "could not stage Helm board acknowledgement"
 
