@@ -184,6 +184,15 @@ run_sync() {  # <case-dir> <fakebin> [--force]
   local -a a=()
   [ -z "$arg" ] || a+=("$arg")
   cp "$case_dir/board.json" "$case_dir/board-state.json"
+  if [ -n "${FM_FAKE_BOARD_PAGE_2:-}" ]; then
+    jq -s '.[0] as $first | .[1] as $second
+      | $first
+      | .data.user.projectV2.items.nodes += $second.data.user.projectV2.items.nodes
+      | .data.user.projectV2.items.pageInfo = $second.data.user.projectV2.items.pageInfo' \
+      "$case_dir/board-state.json" "$FM_FAKE_BOARD_PAGE_2" > "$case_dir/board-state.json.next" \
+      && mv "$case_dir/board-state.json.next" "$case_dir/board-state.json" \
+      || fail "could not stage paginated fake board state"
+  fi
   FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_BOARD="$case_dir/board.json" \
