@@ -225,6 +225,7 @@ GRAPHQL_QUERY='query($owner:String!, $number:Int!, $cursor:String) {
   }
 }'
 
+# shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
 ITEM_GRAPHQL_QUERY='query($itemId:ID!) {
   node(id:$itemId) {
     ... on ProjectV2Item {
