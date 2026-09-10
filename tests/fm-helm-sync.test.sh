@@ -11,6 +11,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 SYNC="$ROOT/bin/fm-helm-sync.sh"
+WATCH="$ROOT/bin/fm-helm-watch.sh"
+POLL="$ROOT/bin/fm-helm-poll.sh"
 TMP_ROOT=$(fm_test_tmproot fm-helm-sync)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -84,15 +86,80 @@ if [ "${1:-}" = api ]; then
   [ "${FM_FAKE_GH_MODE:-}" = network ] && exit 1
   case "$*" in
     *addProjectV2DraftIssue*)
-      printf '%s\n' '{"data":{"addProjectV2DraftIssue":{"projectItem":{"id":"created-item","content":{"id":"created-draft"}}}}}' ;;
+      for arg in "$@"; do
+        case "$arg" in
+          title=*) draft_title=${arg#title=} ;;
+          body=*) draft_body=${arg#body=} ;;
+        esac
+      done
+      jq --arg title "$draft_title" --arg body "$draft_body" '
+        .data.user.projectV2.items.nodes += [{
+          id:"created-item",
+          content:{__typename:"DraftIssue",id:"created-draft",title:$title,body:$body},
+          fieldValues:{nodes:[]}
+        }]' "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
+        && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+      jq -n --arg title "$draft_title" --arg body "$draft_body" '
+        {data:{addProjectV2DraftIssue:{projectItem:{
+          id:"created-item",
+          content:{__typename:"DraftIssue",id:"created-draft",title:$title,body:$body}
+        }}}}' ;;
     *updateProjectV2DraftIssue*)
+      for arg in "$@"; do
+        case "$arg" in
+          draftIssueId=*) draft_id=${arg#draftIssueId=} ;;
+          title=*) draft_title=${arg#title=} ;;
+          body=*) draft_body=${arg#body=} ;;
+        esac
+      done
+      jq --arg id "$draft_id" --arg title "$draft_title" --arg body "$draft_body" '
+        .data.user.projectV2.items.nodes |= map(
+          if .content.id == $id then .content.title = $title | .content.body = $body else . end)' \
+        "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
+        && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+      if [ -n "${FM_FAKE_BOARD_AFTER_DRAFT:-}" ]; then
+        cp "$FM_FAKE_BOARD_AFTER_DRAFT" "$FM_FAKE_BOARD_STATE"
+      fi
       printf '%s\n' '{"data":{"updateProjectV2DraftIssue":{"draftIssue":{"id":"updated-draft"}}}}' ;;
     *updateProjectV2ItemFieldValue*)
+      [ -z "${FM_FAKE_HELM_MUTATION_STALL:-}" ] || sleep "$FM_FAKE_HELM_MUTATION_STALL"
+      for arg in "$@"; do
+        case "$arg" in
+          itemId=*) item_id=${arg#itemId=} ;;
+          fieldId=*) field_id=${arg#fieldId=} ;;
+          optionId=*) option_id=${arg#optionId=} ;;
+        esac
+      done
+      jq --arg item "$item_id" --arg field "$field_id" --arg option "$option_id" '
+        (.data.user.projectV2.fields.nodes[] | select(.id == $field)) as $definition
+        | ($definition.options[] | select(.id == $option).name) as $name
+        | .data.user.projectV2.items.nodes |= map(
+            if .id == $item then
+              .fieldValues.nodes |=
+                if any(.[]?; .field.name == $definition.name) then
+                  map(if .field.name == $definition.name then .name = $name | .optionId = $option else . end)
+                else . + [{field:{name:$definition.name},name:$name,optionId:$option}] end
+            else . end)' "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
+        && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
       printf '%s\n' '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"updated-item"}}}}' ;;
     *cursor=page-2*)
       cat "$FM_FAKE_BOARD_PAGE_2" ;;
+    *fields\(first:100\)*)
+      cat "$FM_FAKE_BOARD_STATE" ;;
+    *node\(id:\$itemId\)*)
+      item_id=$(printf '%s\n' "$*" | sed -n 's/.*itemId=\([^ ]*\).*/\1/p')
+      if [ -n "${FM_FAKE_BOARD_PREWRITE:-}" ]; then
+        jq --arg id "$item_id" '{data:{node:([.data.user.projectV2.items.nodes[] | select(.id == $id)][0])}}' "$FM_FAKE_BOARD_PREWRITE"
+      else
+        jq --arg id "$item_id" '{data:{node:([.data.user.projectV2.items.nodes[] | select(.id == $id)][0])}}' "$FM_FAKE_BOARD_STATE"
+      fi ;;
     *)
-      cat "$FM_FAKE_BOARD" ;;
+      if [ -n "${FM_FAKE_BOARD_AFTER_SYNC:-}" ]; then
+        cat "$FM_FAKE_BOARD_AFTER_SYNC"
+      else
+        cat "$FM_FAKE_BOARD"
+      fi
+      ;;
   esac
   exit 0
 fi
@@ -116,16 +183,62 @@ run_sync() {  # <case-dir> <fakebin> [--force]
   local case_dir=$1 fb=$2 arg=${3:-}
   local -a a=()
   [ -z "$arg" ] || a+=("$arg")
+  cp "$case_dir/board.json" "$case_dir/board-state.json"
+  if [ -n "${FM_FAKE_BOARD_PAGE_2:-}" ]; then
+    if jq -s '.[0] as $first | .[1] as $second
+      | $first
+      | .data.user.projectV2.items.nodes += $second.data.user.projectV2.items.nodes
+      | .data.user.projectV2.items.pageInfo = $second.data.user.projectV2.items.pageInfo' \
+      "$case_dir/board-state.json" "$FM_FAKE_BOARD_PAGE_2" > "$case_dir/board-state.json.next"; then
+      mv "$case_dir/board-state.json.next" "$case_dir/board-state.json" || fail "could not stage paginated fake board state"
+    else
+      fail "could not stage paginated fake board state"
+    fi
+  fi
   FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_BOARD="$case_dir/board.json" \
+    FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
+    FM_FAKE_BOARD_PAGE_2="${FM_FAKE_BOARD_PAGE_2:-}" \
+    FM_FAKE_GH_LOG="$case_dir/gh.log" \
+    FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
+    FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
+    FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
+    FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
+    FM_FAKE_BOARD_PREWRITE="${FM_FAKE_BOARD_PREWRITE:-}" \
+    FM_FAKE_BOARD_AFTER_DRAFT="${FM_FAKE_BOARD_AFTER_DRAFT:-}" \
+    FM_FAKE_HELM_MUTATION_STALL="${FM_FAKE_HELM_MUTATION_STALL:-}" \
+    PATH="$fb:$PATH" \
+    "$SYNC" "${a[@]}"
+}
+
+run_poll() {  # <case-dir> <fakebin>
+  local case_dir=$1 fb=$2
+  cp "$case_dir/board.json" "$case_dir/board-state.json"
+  FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_BOARD="$case_dir/board.json" \
+    FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
+    FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
+    FM_FAKE_GH_LOG="$case_dir/gh.log" \
+    PATH="$fb:$PATH" \
+    "$POLL"
+}
+
+run_watch() {  # <case-dir> <fakebin>
+  local case_dir=$1 fb=$2
+  cp "$case_dir/board.json" "$case_dir/board-state.json"
+  FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_BOARD="$case_dir/board.json" \
+    FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
     FM_FAKE_BOARD_PAGE_2="${FM_FAKE_BOARD_PAGE_2:-}" \
     FM_FAKE_GH_LOG="$case_dir/gh.log" \
     FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
     FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
     FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
     PATH="$fb:$PATH" \
-    "$SYNC" "${a[@]}"
+    "$WATCH"
 }
 
 # ---------------------------------------------------------------------------
@@ -218,6 +331,22 @@ case_dir="$TMP_ROOT/delete"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
 printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+acknowledged_body=$(cat <<'EOF'
+
+## Facts
+
+- **Repo:** firstmate
+- **Type:** ship - produces a change and a PR
+- **Priority:** P3
+- **Filed:** 2026-09-09
+
+## Notes
+
+
+---
+_Source of truth: `data/backlog.md` in the owning firstmate home._
+EOF
+)
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
@@ -445,6 +574,237 @@ before=$(wc -l <"$case_dir/gh.log")
 run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "debounce second run failed"
 [ "$(wc -l <"$case_dir/gh.log")" -eq "$before" ] || fail "an unchanged fleet backlog made a GitHub call"
 pass "an unchanged fleet backlog is debounced without a GitHub call"
+
+case_dir="$TMP_ROOT/poll-acknowledgement"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] acknowledged-task - Acknowledged task (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item ack-item ack-draft acknowledged-task 'Acknowledged task' "$acknowledged_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "initial acknowledgement sync failed"
+run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "initial acknowledgement poll failed"
+sed 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+  || fail "could not stage the in-flight backlog"
+mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+board_json "$(jq -n --argjson a "$(draft_item ack-item ack-draft acknowledged-task 'Acknowledged task' "$acknowledged_body" 'In flight' flight-status P3 p3-priority)" '[$a]')" > "$case_dir/after-sync-board.json"
+FM_FAKE_BOARD_AFTER_SYNC="$case_dir/after-sync-board.json" run_sync "$case_dir" "$fb" >/dev/null 2>&1 \
+  || fail "backlog-driven acknowledgement sync failed"
+mv "$case_dir/after-sync-board.json" "$case_dir/board.json"
+out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post-sync poll failed: $out"
+[ -z "$out" ] || fail "a board write caused a false captain-edit wake: $out"
+pass "a backlog-driven board sync acknowledges the poll signature"
+
+case_dir="$TMP_ROOT/prewrite-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] conflict-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+conflict_body=$(cat <<'EOF'
+
+## Facts
+
+- **Repo:** firstmate
+- **Type:** ship - produces a change and a PR
+- **Priority:** P3
+- **Filed:** 2026-09-09
+
+## Notes
+
+
+---
+_Source of truth: `data/backlog.md` in the owning firstmate home._
+EOF
+)
+board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft conflict-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "conflict baseline sync failed"
+run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "conflict baseline poll failed"
+baseline_hash=$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")
+sed 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+  || fail "could not stage the conflict backlog"
+mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft conflict-task 'Captain title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "pre-write conflict sync exited nonzero: $out"
+assert_contains "$out" "Helm board and backlog both changed" \
+  "a board delta since poll baseline did not request reconciliation"
+if grep -F 'updateProjectV2' "$case_dir/gh.log" >/dev/null || grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
+  fail "a pre-write board conflict mutated the board"
+fi
+[ "$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")" = "$baseline_hash" ] \
+  || fail "a pre-write board conflict advanced the sync debounce state"
+pass "a pre-write board conflict preserves the captain edit"
+
+case_dir="$TMP_ROOT/late-prewrite-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] late-conflict-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item late-conflict-item late-conflict-draft late-conflict-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "late conflict baseline sync failed"
+run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "late conflict baseline poll failed"
+baseline_hash=$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")
+sed 's/Backlog title/Revised backlog title/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+  || fail "could not stage the late conflict backlog"
+mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+board_json "$(jq -n --argjson a "$(draft_item late-conflict-item late-conflict-draft late-conflict-task 'Captain title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/prewrite-board.json"
+: > "$case_dir/gh.log"
+out=$(FM_FAKE_BOARD_PREWRITE="$case_dir/prewrite-board.json" run_sync "$case_dir" "$fb" 2>&1) \
+  || fail "late pre-write conflict sync exited nonzero: $out"
+assert_contains "$out" "Helm board and backlog both changed" \
+  "a late board delta did not request reconciliation"
+if grep -F 'updateProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
+  fail "a late pre-write board conflict rewrote the captain edit"
+fi
+[ "$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")" = "$baseline_hash" ] \
+  || fail "a late pre-write board conflict advanced the sync debounce state"
+pass "a late pre-write board conflict preserves the captain edit"
+
+case_dir="$TMP_ROOT/second-write-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] second-write-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item second-write-item second-write-draft second-write-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "second-write baseline sync failed"
+run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "second-write baseline poll failed"
+sed -e 's/Backlog title/Revised backlog title/' -e 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+  || fail "could not stage the second-write backlog"
+mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+board_json "$(jq -n --argjson a "$(draft_item second-write-item second-write-draft second-write-task 'Revised backlog title' "$conflict_body" 'Waiting on you' waiting-status P3 p3-priority)" '[$a]')" > "$case_dir/after-draft-board.json"
+: > "$case_dir/gh.log"
+out=$(FM_FAKE_BOARD_AFTER_DRAFT="$case_dir/after-draft-board.json" run_sync "$case_dir" "$fb" 2>&1) \
+  || fail "second-write conflict sync exited nonzero: $out"
+assert_contains "$out" "Helm board and backlog both changed" \
+  "a second-write board delta did not request reconciliation"
+grep -F 'updateProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null \
+  || fail "the draft mutation did not precede the second-write conflict"
+if grep -F 'updateProjectV2ItemFieldValue' "$case_dir/gh.log" >/dev/null; then
+  fail "a second board write overwrote the captain Status"
+fi
+jq -e '
+  .data.user.projectV2.items.nodes[]
+  | select(.id == "second-write-item")
+  | any(.fieldValues.nodes[]; .field.name == "Status" and .name == "Waiting on you")
+' "$case_dir/board-state.json" >/dev/null \
+  || fail "the stateful board did not retain the captain Status"
+pass "a second board write preserves the captain Status"
+
+case_dir="$TMP_ROOT/bounded-mutation"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] bounded-task - Bounded mutation (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item bounded-item bounded-draft bounded-task 'Bounded mutation' 'x' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+started=$(date +%s)
+out=$(FM_FAKE_HELM_MUTATION_STALL=26 run_sync "$case_dir" "$fb" 2>&1) \
+  || fail "sync with a delayed mutation exited nonzero: $out"
+elapsed=$(( $(date +%s) - started ))
+[ "$elapsed" -le 26 ] || fail "mutation exceeded the sync deadline: ${elapsed}s"
+assert_contains "$out" "could not update Helm Status" \
+  "a delayed mutation did not surface a watcher diagnostic"
+[ ! -e "$case_dir/home/state/.helm-sync-backlog.sha256" ] \
+  || fail "a timed-out mutation advanced the sync debounce state"
+pass "a delayed board mutation is bounded and remains retryable"
+
+# ---------------------------------------------------------------------------
+# Watcher adapter: successful backlog changes are applied without creating a
+# wake, while a fail-open skip becomes check output for the watcher to surface.
+# ---------------------------------------------------------------------------
+case_dir="$TMP_ROOT/watcher-trigger"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] watcher-task - Reaches the board automatically (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+out=$(run_watch "$case_dir" "$fb") || fail "watcher adapter exited nonzero: $out"
+[ -z "$out" ] || fail "successful watcher sync should stay silent: $out"
+grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null \
+  || fail "a new backlog item did not reach the board through the watcher adapter"
+pass "watcher adapter synchronizes a new backlog item without a wake"
+
+FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_BOOTSTRAP_NETWORK=skip \
+  PATH="$fb:$PATH" "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1 \
+  || fail "bootstrap could not arm the Helm watcher check"
+[ -x "$case_dir/home/state/helm-sync.check.sh" ] \
+  || fail "bootstrap did not install the Helm watcher check"
+[ -s "$case_dir/home/state/helm-sync.check-trust" ] \
+  || fail "bootstrap did not authenticate the Helm watcher check"
+[ -x "$case_dir/home/state/helm-board.check.sh" ] \
+  || fail "bootstrap did not install the Helm board poll check"
+[ -s "$case_dir/home/state/helm-board.check-trust" ] \
+  || fail "bootstrap did not authenticate the Helm board poll check"
+pass "bootstrap arms the authenticated Helm watcher checks"
+
+rm -f "$case_dir/home/config/helm.json"
+override_state="$case_dir/override-state"
+mkdir -p "$override_state"
+mv "$case_dir/home/state/helm-sync.check.sh" "$case_dir/home/state/helm-sync.check-trust" \
+  "$case_dir/home/state/helm-board.check.sh" "$case_dir/home/state/helm-board.check-trust" "$override_state/"
+FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$override_state" FM_BOOTSTRAP_NETWORK=skip \
+  PATH="$fb:$PATH" "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1 \
+  || fail "bootstrap could not retire overridden Helm watcher checks"
+[ ! -e "$override_state/helm-sync.check.sh" ] && [ ! -e "$override_state/helm-sync.check-trust" ] \
+  || fail "bootstrap did not retire the overridden Helm sync check"
+[ ! -e "$override_state/helm-board.check.sh" ] && [ ! -e "$override_state/helm-board.check-trust" ] \
+  || fail "bootstrap did not retire the overridden Helm board check"
+pass "bootstrap retires Helm checks from the overridden state directory"
+
+case_dir="$TMP_ROOT/watcher-diagnostic"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] unsupported-task - Must not disappear (repo: unrecognised-project) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+out=$(run_watch "$case_dir" "$fb") || fail "diagnostic watcher adapter exited nonzero: $out"
+assert_contains "$out" "unsupported repository unrecognised-project for unsupported-task; using other" \
+  "an unsupported backlog project did not emit its fallback diagnostic"
+grep -F 'optionId=other-project' "$case_dir/gh.log" >/dev/null \
+  || fail "an unsupported backlog project was not synced into the other bucket"
+pass "watcher adapter retains unsupported projects in the other bucket"
 
 for mode in no-config noauth scope network; do
   cd_dir="$TMP_ROOT/fail-$mode"

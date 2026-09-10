@@ -329,11 +329,8 @@ It also tolerates a card the captain converted to a real repo issue: such a card
 It never archives or deletes a card, and a malformed backlog parse fails open before any board mutation.
 
 An explicit `--force` read accepts approved captain board edits and routes unresolved changes through ordinary firstmate intake.
-The [Helm board sync configuration](configuration.md#helm-board-sync-confighelmjson) owns the field-authority and wake behavior.
+The [Helm board sync configuration](configuration.md#helm-board-sync-confighelmjson) owns watcher registration, field authority, wake behavior, and the accepted pre-write containment limit.
 The script header owns the card identity cache and deletion-tombstone contract.
-
-`bin/fm-helm-poll.sh`, wired as a registered watcher check through `state/helm-board.check.sh`, is the wake path for an idle-board edit: a cheap read-only board read whose signature it compares to `state/.helm-board-poll`, printing one wake line only when the board changed and no backlog change is pending.
-On that wake firstmate runs `bin/fm-helm-sync.sh --force` and handles whatever the read turned up through intake.
 The sync's durable markers and the queue keys make every board-driven wake idempotent across repeated runs.
 The real configuration is absent by default and lives in the home-local ignored `config/helm.json`, so upstream installations remain inert and `.claude/settings.json` stays untouched.
 
