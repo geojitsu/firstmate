@@ -140,12 +140,13 @@ If a fail-open sync skip would leave a backlog item unsynchronized, its diagnost
 Field authority: `data/backlog.md` in the owning home is authoritative for a card's title, body, kind, repository, priority, and lifecycle status.
 The board is authoritative only for the captain's own edits, only for Priority, Status, and card text, and only on an explicit `bin/fm-helm-sync.sh --force` read.
 On `--force` a captain edit to a card's Priority is written back into the owning backlog row; a move into the dispatch status raises one durable dispatch `check` wake for ordinary firstmate intake; and a move to Done on a live task, a move backwards, a title or body edit, a new captain card, or a deleted card each raise one `check` wake and change no backlog task mechanically.
-On the normal (non `--force`) path the backlog always wins and no board edit is read back.
+On the normal (non `--force`) path the backlog wins unless the board changed since the poll baseline or immediately before a board write.
+In either conflict the sync preserves the board item, raises the existing reconciliation `check` wake, and does not read the edit back mechanically.
 The script never deletes a card and never spawns work.
 The sync records each request with a durable marker and a queue key, so repeating the same board edit never enqueues duplicate wakes.
 `state/helm-cards.tsv` (mode 0600) is the card-to-task identity cache, rebuilt from the board when absent.
 
-`bin/fm-helm-poll.sh` is the automatically registered watcher check (through `state/helm-board.check.sh`, bound with `bin/fm-check-register.sh helm-board`) that wakes firstmate to run `--force` when the captain edits a card while the backlog is quiet.
+`bin/fm-helm-poll.sh` is the automatically registered watcher check (through `state/helm-board.check.sh`, bound with `bin/fm-check-register.sh helm-board`) that wakes firstmate to run `--force` when the captain edits a card, including when a backlog change is pending.
 It is inert until `config/helm.json` exists.
 
 ## Runtime backend (config/backend / FM_BACKEND)

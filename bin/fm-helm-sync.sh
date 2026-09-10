@@ -26,8 +26,10 @@
 #     edit, a brand-new captain card, a deleted card: each raises one check wake
 #     for ordinary firstmate intake.  NONE of these mutate a backlog task
 #     mechanically and NONE spawn a worker.
-# On the normal (non --force) path the backlog always wins: card content is
-# rewritten from the backlog and no board edit is accepted back.
+# On the normal (non --force) path the backlog wins unless the board changed
+# since the poll baseline or an immediate pre-write reread finds a captain edit.
+# Either conflict preserves the board item and emits the existing reconciliation
+# wake; no board edit is accepted back mechanically.
 #
 # ## Debounce
 # The watcher-check path debounces all GitHub work on one SHA-256 hash over every
