@@ -328,19 +328,9 @@ The sync creates missing draft cards and keeps the backlog-owned fields in step 
 It also tolerates a card the captain converted to a real repo issue: such a card keeps full field sync but its title and body are never rewritten.
 It never archives or deletes a card, and a malformed backlog parse fails open before any board mutation.
 
-Bootstrap registers main-home sync and board-poll watcher checks while `config/helm.json` exists.
-The sync invokes the ordinary reconciliation at the watcher cadence, stays silent after a successful or debounced run, and turns any fail-open skip into a durable `check` wake; the authenticated board poll detects idle captain edits and requests the forced reconciliation.
-The single writer still aggregates each local secondmate backlog, which prevents competing board writes while keeping secondmate transitions convergent.
-
 An explicit `--force` read accepts approved captain board edits and routes unresolved changes through ordinary firstmate intake.
-The [Helm board sync configuration](configuration.md#helm-board-sync-confighelmjson) owns the field-authority and wake behavior.
+The [Helm board sync configuration](configuration.md#helm-board-sync-confighelmjson) owns watcher registration, field authority, wake behavior, and the accepted pre-write containment limit.
 The script header owns the card identity cache and deletion-tombstone contract.
-
-GitHub Projects has no conditional or versioned mutation, so the tiny interval between a pre-write board read and its mutation is an accepted containment limit.
-The reverse poll detects a divergence in that interval and raises the existing reconciliation wake.
-
-`bin/fm-helm-poll.sh`, automatically wired as a registered watcher check through `state/helm-board.check.sh`, is the wake path for a board edit: a cheap read-only board read whose signature it compares to `state/.helm-board-poll`, printing a forced-reconciliation wake for an idle edit or a concurrent backlog change.
-On that wake firstmate runs `bin/fm-helm-sync.sh --force` and handles whatever the read turned up through intake.
 The sync's durable markers and the queue keys make every board-driven wake idempotent across repeated runs.
 The real configuration is absent by default and lives in the home-local ignored `config/helm.json`, so upstream installations remain inert and `.claude/settings.json` stays untouched.
 
