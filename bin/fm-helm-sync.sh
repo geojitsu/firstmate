@@ -385,6 +385,9 @@ guard_board_write() {
   local item_id=$1 remaining expected actual current
   [ "$WRITE_ITEM_ID" = "$item_id" ] || return 1
   [ "$WRITE_GUARD" = true ] || return 0
+  # Accepted containment: GitHub Projects has no conditional or versioned
+  # mutation, so a captain edit can still land between this read and the write.
+  # The next reverse poll detects that divergence and raises the reconcile wake.
   remaining=$(( SYNC_DEADLINE - $(date +%s) ))
   [ "$remaining" -gt 0 ] || return 1
   if ! run_gh_bounded "$remaining" gh api graphql \

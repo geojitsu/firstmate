@@ -336,6 +336,9 @@ An explicit `--force` read accepts approved captain board edits and routes unres
 The [Helm board sync configuration](configuration.md#helm-board-sync-confighelmjson) owns the field-authority and wake behavior.
 The script header owns the card identity cache and deletion-tombstone contract.
 
+GitHub Projects has no conditional or versioned mutation, so the tiny interval between a pre-write board read and its mutation is an accepted containment limit.
+The reverse poll detects a divergence in that interval and raises the existing reconciliation wake.
+
 `bin/fm-helm-poll.sh`, automatically wired as a registered watcher check through `state/helm-board.check.sh`, is the wake path for a board edit: a cheap read-only board read whose signature it compares to `state/.helm-board-poll`, printing a forced-reconciliation wake for an idle edit or a concurrent backlog change.
 On that wake firstmate runs `bin/fm-helm-sync.sh --force` and handles whatever the read turned up through intake.
 The sync's durable markers and the queue keys make every board-driven wake idempotent across repeated runs.

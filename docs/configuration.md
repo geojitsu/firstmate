@@ -142,6 +142,8 @@ The board is authoritative only for the captain's own edits, only for Priority, 
 On `--force` a captain edit to a card's Priority is written back into the owning backlog row; a move into the dispatch status raises one durable dispatch `check` wake for ordinary firstmate intake; and a move to Done on a live task, a move backwards, a title or body edit, a new captain card, or a deleted card each raise one `check` wake and change no backlog task mechanically.
 On the normal (non `--force`) path the backlog wins unless the board changed since the poll baseline or immediately before a board write.
 In either conflict the sync preserves the board item, raises the existing reconciliation `check` wake, and does not read the edit back mechanically.
+GitHub Projects has no conditional or versioned mutation, so the tiny interval between the pre-write read and mutation is an accepted containment limit.
+The next reverse poll detects a divergence in that interval and raises the same reconciliation wake.
 The script never deletes a card and never spawns work.
 The sync records each request with a durable marker and a queue key, so repeating the same board edit never enqueues duplicate wakes.
 `state/helm-cards.tsv` (mode 0600) is the card-to-task identity cache, rebuilt from the board when absent.
