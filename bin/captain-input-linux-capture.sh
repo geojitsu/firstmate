@@ -69,17 +69,28 @@ command -v ssh >/dev/null 2>&1 || fail "ssh not found"
 # caller is expected to have already checked an image/* type exists (the
 # Hyprland dispatcher does this before invoking this script) but this script
 # re-checks independently so it is safe to invoke directly too.
-mime=$(wl-paste --list-types 2>/dev/null | grep '^image/' | head -1)
+types=$(wl-paste --list-types 2>/dev/null) || fail "could not list clipboard types"
+mime=
+has_unsupported_image=0
+while IFS= read -r offered_mime; do
+    case "$offered_mime" in
+        image/png) mime=image/png; break ;;
+        image/jpeg) [ -n "$mime" ] || mime=image/jpeg ;;
+        image/*) has_unsupported_image=1 ;;
+    esac
+done <<< "$types"
 # Silent, non-error exit when there's no image: this script is now invoked on
 # every SUPER+V press inside the captain-ssh window regardless of clipboard
 # content (see the Hyprland dispatcher's design note on avoiding a
 # synchronous clipboard check inside its own keypress handler), so the plain-
 # text-paste case is the common path here, not a failure.
-[ -n "$mime" ] || exit 0
+[ -n "$mime" ] || {
+    [ "$has_unsupported_image" -eq 0 ] && exit 0
+    fail "clipboard image type is unsupported"
+}
 case "$mime" in
     image/png) ext=png ;;
     image/jpeg) ext=jpg ;;
-    *) fail "clipboard image type is unsupported: $mime" ;;
 esac
 
 # Unique per invocation, not just per second - see the concurrency note
