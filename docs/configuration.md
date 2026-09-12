@@ -850,7 +850,9 @@ It listens for `OnClipboardChange` (Windows' clipboard-change-listener API) rath
 Fill in the host, remote drop directory, and SSH user placeholders at the top of the script before using it.
 
 `bin/captain-input-linux-capture.sh` is the Linux/Wayland equivalent, a reference bash script using `wl-clipboard` (`wl-paste`) instead of the Win32 clipboard APIs.
-Unlike the Windows script, it is meant to be triggered once per deliberate keypress rather than run as a persistent clipboard-change listener - a captain-side Hyprland keybind can scope the trigger to one specific SSH terminal window (falling back to normal paste everywhere else and whenever the clipboard doesn't hold an image), keeping this script itself agnostic to how it was invoked.
+Unlike the Windows script, it is meant to be triggered once per deliberate keypress rather than run as a persistent clipboard-change listener - a captain-side Hyprland keybind can scope the trigger to one specific SSH terminal window, falling back to normal paste everywhere else.
+Within that window, the script uploads a clipboard PNG or JPEG (preferring PNG) and otherwise exits without delivery.
+It requires `wl-clipboard`, `jq`, `scp`, and `ssh` on the Linux machine; `notify-send` is optional for desktop notifications.
 Fill in the same host, remote drop directory, and SSH user placeholders at the top of the script before using it.
 
 `bin/fm-captain-input-watch.sh` is the registered check body.

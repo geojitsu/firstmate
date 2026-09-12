@@ -20,9 +20,9 @@
 # once per deliberate keypress - see the accompanying design at
 # data/ssh-multimodal-input-plan-001/report.md and the Hyprland dispatcher
 # pattern that scopes a SUPER+V keybind to one specific SSH terminal window,
-# falling back to the normal paste action everywhere else and whenever the
-# clipboard doesn't hold an image. This script itself doesn't care how it was
-# invoked - it just sends whatever image is on the clipboard right now.
+# falling back to the normal paste action everywhere else. This script itself
+# doesn't care how it was invoked - it sends a supported image from the
+# clipboard when one is present and otherwise exits without delivery.
 #
 # Concurrency: multiple instances of this script can run at once (e.g. two
 # different SSH windows triggered close together) without colliding or
@@ -65,10 +65,9 @@ command -v jq >/dev/null 2>&1 || fail "jq not found"
 command -v scp >/dev/null 2>&1 || fail "scp not found"
 command -v ssh >/dev/null 2>&1 || fail "ssh not found"
 
-# Pick an available image MIME type off the clipboard, preferring PNG. A
-# caller is expected to have already checked an image/* type exists (the
-# Hyprland dispatcher does this before invoking this script) but this script
-# re-checks independently so it is safe to invoke directly too.
+# Pick an available supported image MIME type off the clipboard, preferring
+# PNG. The Hyprland dispatcher can invoke this script for every keypress, so
+# it performs the clipboard check itself and is also safe to invoke directly.
 types=$(wl-paste --list-types 2>/dev/null) || fail "could not list clipboard types"
 mime=
 has_unsupported_image=0
