@@ -1,6 +1,6 @@
 ---
 title: Helm sync exhausted its per-run write budget
-description: One GitHub request per card field let a multi-field reconciliation exceed its fixed deadline before publishing its acknowledgement.
+description: Separate GitHub requests for each changed card part could exhaust the fixed sync deadline before acknowledgement.
 ---
 
 ## Symptom
@@ -11,12 +11,12 @@ The sync reported a failed field update or card creation, and did not update the
 ## Root cause
 
 `bin/fm-helm-sync.sh` applies a bounded deadline to the complete board read and reconciliation run.
-The former implementation issued a separate pre-write read and GraphQL mutation for each changed field.
-A card needing text plus several field updates could exhaust the deadline partway through its own writes.
+The former implementation issued a separate pre-write read and GraphQL mutation for each changed field or card text update.
+A card needing several changes could exhaust the deadline partway through its own writes.
 
 ## Fix
 
-The sync now plans all changed fields for one card and sends them in one GraphQL mutation.
+The sync now plans all changed fields and a draft-text update for one card, then sends them in one GraphQL mutation.
 It performs one pre-write conflict read for an existing card, acknowledges every successful mutation in the local board view, and publishes the matching poll signature.
 
 ## Prevention

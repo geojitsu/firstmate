@@ -485,6 +485,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/bugs/2026-09-12-helm-sync-multi-field-deadline.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/calm-mode-feasibility.md",
       "audience": "maintainer-verification"
     },
