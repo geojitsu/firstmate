@@ -455,35 +455,63 @@ ack_new_draft() {
   fi
 }
 
-update_single_select() {
-  local item_id=$1 field=$2 option=$3
-  guard_board_write "$item_id" || return 1
-  # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
-  local query='mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $optionId:String!) {
-    updateProjectV2ItemFieldValue(input:{projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{singleSelectOptionId:$optionId}}) {
-      projectV2Item { id }
-    }
-  }'
-  graphql_mutation "$query" \
-    --field "projectId=$PROJECT_ID" \
-    --field "itemId=$item_id" \
-    --field "fieldId=$field" \
-    --field "optionId=$option"
+PLAN_DRAFT_ID=
+PLAN_DRAFT_TITLE=
+PLAN_DRAFT_BODY=
+PLAN_FIELD_IDS=()
+PLAN_FIELD_NAMES=()
+PLAN_FIELD_VALUES=()
+PLAN_FIELD_OPTIONS=()
+
+plan_reset() {
+  PLAN_DRAFT_ID=
+  PLAN_DRAFT_TITLE=
+  PLAN_DRAFT_BODY=
+  PLAN_FIELD_IDS=()
+  PLAN_FIELD_NAMES=()
+  PLAN_FIELD_VALUES=()
+  PLAN_FIELD_OPTIONS=()
 }
 
-update_draft() {
-  local item_id=$1 draft_id=$2 title=$3 body=$4
+plan_draft() {
+  PLAN_DRAFT_ID=$1
+  PLAN_DRAFT_TITLE=$2
+  PLAN_DRAFT_BODY=$3
+}
+
+plan_field() {
+  PLAN_FIELD_IDS+=("$1")
+  PLAN_FIELD_NAMES+=("$2")
+  PLAN_FIELD_VALUES+=("$3")
+  PLAN_FIELD_OPTIONS+=("$4")
+}
+
+write_card() {
+  local item_id=$1 i vars='' ops=''
+  local -a args=()
+  [ -n "$PLAN_DRAFT_ID" ] || [ "${#PLAN_FIELD_IDS[@]}" -gt 0 ] || return 0
   guard_board_write "$item_id" || return 1
-  # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
-  local query='mutation($draftIssueId:ID!, $title:String!, $body:String!) {
-    updateProjectV2DraftIssue(input:{draftIssueId:$draftIssueId, title:$title, body:$body}) {
-      draftIssue { id }
-    }
-  }'
-  graphql_mutation "$query" \
-    --field "draftIssueId=$draft_id" \
-    --field "title=$title" \
-    --field "body=$body"
+  if [ -n "$PLAN_DRAFT_ID" ]; then
+    vars="\$draftIssueId:ID!, \$title:String!, \$body:String!"
+    ops="draft:updateProjectV2DraftIssue(input:{draftIssueId:\$draftIssueId,title:\$title,body:\$body}){draftIssue{id}}"
+    args+=(--field "draftIssueId=$PLAN_DRAFT_ID" --field "title=$PLAN_DRAFT_TITLE" --field "body=$PLAN_DRAFT_BODY")
+  fi
+  if [ "${#PLAN_FIELD_IDS[@]}" -gt 0 ]; then
+    vars="${vars:+$vars, }\$projectId:ID!, \$itemId:ID!"
+    args+=(--field "projectId=$PROJECT_ID" --field "itemId=$item_id")
+    for i in "${!PLAN_FIELD_IDS[@]}"; do
+      vars="$vars, \$f$i:ID!, \$o$i:String!"
+      ops="$ops w$i:updateProjectV2ItemFieldValue(input:{projectId:\$projectId,itemId:\$itemId,fieldId:\$f$i,value:{singleSelectOptionId:\$o$i}}){projectV2Item{id}}"
+      args+=(--field "f$i=${PLAN_FIELD_IDS[$i]}" --field "o$i=${PLAN_FIELD_OPTIONS[$i]}")
+    done
+  fi
+  graphql_mutation "mutation($vars){$ops}" "${args[@]}" || return 1
+  if [ -n "$PLAN_DRAFT_ID" ]; then
+    ack_draft "$item_id" "$PLAN_DRAFT_TITLE" "$PLAN_DRAFT_BODY" || return 1
+  fi
+  for i in "${!PLAN_FIELD_IDS[@]}"; do
+    ack_field "$item_id" "${PLAN_FIELD_NAMES[$i]}" "${PLAN_FIELD_VALUES[$i]}" "${PLAN_FIELD_OPTIONS[$i]}" || return 1
+  done
 }
 
 create_draft() {
@@ -777,6 +805,7 @@ jq -r '.data.user.projectV2.items.nodes[].id' "$BOARD_JSON" | sort -u >"$BOARD_I
 record_count=$(jq 'length' "$BACKLOG_JSON")
 
 while IFS= read -r record; do
+  plan_reset
   task_id=$(jq -r '.id' <<<"$record")
   home_path=$(record_home_path "$task_id")
   title=$(jq -r '.title' <<<"$record")
@@ -859,9 +888,7 @@ while IFS= read -r record; do
     elif [ "$current_title" != "$title" ] || [ "$current_body" != "$body" ]; then
       draft_id=$content_node_id
       [ -n "$draft_id" ] || helm_fail_open "Helm card $task_id has no draft issue id"
-      update_draft "$item_id" "$draft_id" "$title" "$body" \
-        || helm_fail_open "could not update the Helm card content for $task_id"
-      ack_draft "$item_id" "$title" "$body" || helm_fail_open "could not stage Helm board acknowledgement"
+      plan_draft "$draft_id" "$title" "$body"
     fi
   fi
 
@@ -912,33 +939,24 @@ while IFS= read -r record; do
 
   if [ "$dispatch_request" = false ] && [ "$status_deferred" = false ] && [ "$current_status" != "$desired_status" ]; then
     desired_status_option=$(option_id Status "$desired_status")
-    update_single_select "$item_id" "$STATUS_FIELD_ID" "$desired_status_option" \
-      || helm_fail_open "could not update Helm Status for $task_id"
-    ack_field "$item_id" Status "$desired_status" "$desired_status_option" || helm_fail_open "could not stage Helm board acknowledgement"
+    plan_field "$STATUS_FIELD_ID" Status "$desired_status" "$desired_status_option"
   fi
 
   current_project_id=$(current_option_id "$card" Project)
   current_kind_id=$(current_option_id "$card" Kind)
   current_priority_id=$(current_option_id "$card" Priority)
-  [ "$current_project_id" = "$desired_project_option" ] || \
-    update_single_select "$item_id" "$PROJECT_FIELD_ID" "$desired_project_option" \
-      || helm_fail_open "could not update Helm Project for $task_id"
-  if [ "$current_project_id" != "$desired_project_option" ]; then
-    ack_field "$item_id" Project "$desired_project" "$desired_project_option" || helm_fail_open "could not stage Helm board acknowledgement"
+  [ "$current_project_id" = "$desired_project_option" ] \
+    || plan_field "$PROJECT_FIELD_ID" Project "$desired_project" "$desired_project_option"
+  [ "$current_kind_id" = "$desired_kind_option" ] \
+    || plan_field "$KIND_FIELD_ID" Kind "$desired_kind" "$desired_kind_option"
+  if [ "$push_priority" = true ] && [ "$current_priority_id" != "$desired_priority_option" ]; then
+    plan_field "$PRIORITY_FIELD_ID" Priority "$desired_priority" "$desired_priority_option"
   fi
-  [ "$current_kind_id" = "$desired_kind_option" ] || \
-    update_single_select "$item_id" "$KIND_FIELD_ID" "$desired_kind_option" \
-      || helm_fail_open "could not update Helm Kind for $task_id"
-  if [ "$current_kind_id" != "$desired_kind_option" ]; then
-    ack_field "$item_id" Kind "$desired_kind" "$desired_kind_option" || helm_fail_open "could not stage Helm board acknowledgement"
-  fi
-  if [ "$push_priority" = true ]; then
-    [ "$current_priority_id" = "$desired_priority_option" ] || \
-      update_single_select "$item_id" "$PRIORITY_FIELD_ID" "$desired_priority_option" \
-        || helm_fail_open "could not update Helm Priority for $task_id"
-    if [ "$current_priority_id" != "$desired_priority_option" ]; then
-      ack_field "$item_id" Priority "$desired_priority" "$desired_priority_option" || helm_fail_open "could not stage Helm board acknowledgement"
+  if ! write_card "$item_id"; then
+    if [ "${#PLAN_FIELD_NAMES[@]}" -gt 0 ]; then
+      helm_fail_open "could not update Helm ${PLAN_FIELD_NAMES[0]} for $task_id"
     fi
+    helm_fail_open "could not update the Helm card content for $task_id"
   fi
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -981,9 +999,10 @@ if [ "$record_count" -gt 0 ]; then
     fi
 
     set_write_snapshot "$item_id" "$card"
-    update_single_select "$item_id" "$STATUS_FIELD_ID" "$STATUS_DONE_ID" \
+    plan_reset
+    plan_field "$STATUS_FIELD_ID" Status Done "$STATUS_DONE_ID"
+    write_card "$item_id" \
       || helm_fail_open "could not close the missing Helm task $task_id"
-    ack_field "$item_id" Status Done "$STATUS_DONE_ID" || helm_fail_open "could not stage Helm board acknowledgement"
     marker_remove "$task_id" || helm_fail_open "could not clear the Helm dispatch marker for $task_id"
   done < <(jq -c '.data.user.projectV2.items.nodes[] | select(.content.__typename == "DraftIssue" or .content.__typename == "Issue")' "$BOARD_JSON")
 fi

@@ -84,6 +84,7 @@ if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
 fi
 if [ "${1:-}" = api ]; then
   [ "${FM_FAKE_GH_MODE:-}" = network ] && exit 1
+  [ -z "${FM_FAKE_GH_LATENCY:-}" ] || sleep "$FM_FAKE_GH_LATENCY"
   case "$*" in
     *addProjectV2DraftIssue*)
       for arg in "$@"; do
@@ -104,44 +105,51 @@ if [ "${1:-}" = api ]; then
           id:"created-item",
           content:{__typename:"DraftIssue",id:"created-draft",title:$title,body:$body}
         }}}}' ;;
-    *updateProjectV2DraftIssue*)
+    *updateProjectV2DraftIssue*|*updateProjectV2ItemFieldValue*)
+      # One request carries a card's text update and every field write it
+      # needs; apply each part in order and log every landed write on its own
+      # normalized line so assertions can name the field and option.
+      draft_id=; item_id=; field_ids=(); option_ids=()
       for arg in "$@"; do
         case "$arg" in
           draftIssueId=*) draft_id=${arg#draftIssueId=} ;;
           title=*) draft_title=${arg#title=} ;;
           body=*) draft_body=${arg#body=} ;;
-        esac
-      done
-      jq --arg id "$draft_id" --arg title "$draft_title" --arg body "$draft_body" '
-        .data.user.projectV2.items.nodes |= map(
-          if .content.id == $id then .content.title = $title | .content.body = $body else . end)' \
-        "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
-        && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
-      if [ -n "${FM_FAKE_BOARD_AFTER_DRAFT:-}" ]; then
-        cp "$FM_FAKE_BOARD_AFTER_DRAFT" "$FM_FAKE_BOARD_STATE"
-      fi
-      printf '%s\n' '{"data":{"updateProjectV2DraftIssue":{"draftIssue":{"id":"updated-draft"}}}}' ;;
-    *updateProjectV2ItemFieldValue*)
-      [ -z "${FM_FAKE_HELM_MUTATION_STALL:-}" ] || sleep "$FM_FAKE_HELM_MUTATION_STALL"
-      for arg in "$@"; do
-        case "$arg" in
           itemId=*) item_id=${arg#itemId=} ;;
-          fieldId=*) field_id=${arg#fieldId=} ;;
-          optionId=*) option_id=${arg#optionId=} ;;
+          f[0-9]*=*) idx=${arg%%=*}; field_ids[${idx#f}]=${arg#*=} ;;
+          o[0-9]*=*) idx=${arg%%=*}; option_ids[${idx#o}]=${arg#*=} ;;
+          fieldId=*) field_ids[0]=${arg#fieldId=} ;;
+          optionId=*) option_ids[0]=${arg#optionId=} ;;
         esac
       done
-      jq --arg item "$item_id" --arg field "$field_id" --arg option "$option_id" '
-        (.data.user.projectV2.fields.nodes[] | select(.id == $field)) as $definition
-        | ($definition.options[] | select(.id == $option).name) as $name
-        | .data.user.projectV2.items.nodes |= map(
-            if .id == $item then
-              .fieldValues.nodes |=
-                if any(.[]?; .field.name == $definition.name) then
-                  map(if .field.name == $definition.name then .name = $name | .optionId = $option else . end)
-                else . + [{field:{name:$definition.name},name:$name,optionId:$option}] end
-            else . end)' "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
-        && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
-      printf '%s\n' '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"updated-item"}}}}' ;;
+      if [ "${#field_ids[@]}" -gt 0 ] && [ -n "${FM_FAKE_HELM_MUTATION_STALL:-}" ]; then
+        sleep "$FM_FAKE_HELM_MUTATION_STALL"
+      fi
+      if [ -n "$draft_id" ]; then
+        jq --arg id "$draft_id" --arg title "$draft_title" --arg body "$draft_body" '
+          .data.user.projectV2.items.nodes |= map(
+            if .content.id == $id then .content.title = $title | .content.body = $body else . end)' \
+          "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
+          && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+        printf 'applied draftIssueId=%s\n' "$draft_id" >> "$FM_FAKE_GH_LOG"
+      fi
+      for idx in "${!field_ids[@]}"; do
+        field_id=${field_ids[$idx]}
+        option_id=${option_ids[$idx]}
+        jq --arg item "$item_id" --arg field "$field_id" --arg option "$option_id" '
+          (.data.user.projectV2.fields.nodes[] | select(.id == $field)) as $definition
+          | ($definition.options[] | select(.id == $option).name) as $name
+          | .data.user.projectV2.items.nodes |= map(
+              if .id == $item then
+                .fieldValues.nodes |=
+                  if any(.[]?; .field.name == $definition.name) then
+                    map(if .field.name == $definition.name then .name = $name | .optionId = $option else . end)
+                  else . + [{field:{name:$definition.name},name:$name,optionId:$option}] end
+              else . end)' "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
+          && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+        printf 'applied itemId=%s fieldId=%s optionId=%s\n' "$item_id" "$field_id" "$option_id" >> "$FM_FAKE_GH_LOG"
+      done
+      printf '%s\n' '{"data":{"draft":{"draftIssue":{"id":"updated-draft"}},"w0":{"projectV2Item":{"id":"updated-item"}}}}' ;;
     *cursor=page-2*)
       cat "$FM_FAKE_BOARD_PAGE_2" ;;
     *fields\(first:100\)*)
@@ -206,8 +214,8 @@ run_sync() {  # <case-dir> <fakebin> [--force]
     FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
     FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
     FM_FAKE_BOARD_PREWRITE="${FM_FAKE_BOARD_PREWRITE:-}" \
-    FM_FAKE_BOARD_AFTER_DRAFT="${FM_FAKE_BOARD_AFTER_DRAFT:-}" \
     FM_FAKE_HELM_MUTATION_STALL="${FM_FAKE_HELM_MUTATION_STALL:-}" \
+    FM_FAKE_GH_LATENCY="${FM_FAKE_GH_LATENCY:-}" \
     PATH="$fb:$PATH" \
     "$SYNC" "${a[@]}"
 }
@@ -237,6 +245,7 @@ run_watch() {  # <case-dir> <fakebin>
     FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
     FM_FAKE_GH_MODE="${FM_FAKE_GH_MODE:-}" \
     FM_FAKE_TASKS_FAIL_PRIORITY="${FM_FAKE_TASKS_FAIL_PRIORITY:-}" \
+    FM_FAKE_GH_LATENCY="${FM_FAKE_GH_LATENCY:-}" \
     PATH="$fb:$PATH" \
     "$WATCH"
 }
@@ -677,41 +686,50 @@ fi
   || fail "a late pre-write board conflict advanced the sync debounce state"
 pass "a late pre-write board conflict preserves the captain edit"
 
-case_dir="$TMP_ROOT/second-write-conflict"
+# ---------------------------------------------------------------------------
+# Multi-field convergence: creating a card with several fields lands every
+# change in one run.  The short budget and per-request latency reproduce the
+# deadline pressure that made the former one-request-per-field implementation
+# abort before completing a brand-new card.
+# ---------------------------------------------------------------------------
+case_dir="$TMP_ROOT/multi-field-card"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
 printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
-## Queued
-- [ ] second-write-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## In flight
+- [ ] multi-task - Revised backlog title (repo: firstmate) (kind: ship) (priority: 0) (since: 2026-09-09)
 ## Done
 EOF
-board_json "$(jq -n --argjson a "$(draft_item second-write-item second-write-draft second-write-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
-run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "second-write baseline sync failed"
-run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "second-write baseline poll failed"
-sed -e 's/Backlog title/Revised backlog title/' -e 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
-  || fail "could not stage the second-write backlog"
-mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
-board_json "$(jq -n --argjson a "$(draft_item second-write-item second-write-draft second-write-task 'Revised backlog title' "$conflict_body" 'Waiting on you' waiting-status P3 p3-priority)" '[$a]')" > "$case_dir/after-draft-board.json"
+board_json '[]' > "$case_dir/board.json"
 : > "$case_dir/gh.log"
-out=$(FM_FAKE_BOARD_AFTER_DRAFT="$case_dir/after-draft-board.json" run_sync "$case_dir" "$fb" 2>&1) \
-  || fail "second-write conflict sync exited nonzero: $out"
-assert_contains "$out" "Helm board and backlog both changed" \
-  "a second-write board delta did not request reconciliation"
-grep -F 'updateProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null \
-  || fail "the draft mutation did not precede the second-write conflict"
-if grep -F 'updateProjectV2ItemFieldValue' "$case_dir/gh.log" >/dev/null; then
-  fail "a second board write overwrote the captain Status"
-fi
+out=$(FM_FAKE_GH_LATENCY=5 run_sync "$case_dir" "$fb" 2>&1) \
+  || fail "multi-field sync exited nonzero: $out"
+assert_contains "$out" "fm-helm-sync: synchronized" "a multi-field card change did not converge in one run"
 jq -e '
   .data.user.projectV2.items.nodes[]
-  | select(.id == "second-write-item")
-  | any(.fieldValues.nodes[]; .field.name == "Status" and .name == "Waiting on you")
+  | select(.id == "created-item")
+  | .content.title == "Revised backlog title"
+    and any(.fieldValues.nodes[]; .field.name == "Status" and .name == "In flight")
+    and any(.fieldValues.nodes[]; .field.name == "Priority" and .name == "P0")
+    and any(.fieldValues.nodes[]; .field.name == "Project" and .name == "firstmate")
+    and any(.fieldValues.nodes[]; .field.name == "Kind" and .name == "ship")
 ' "$case_dir/board-state.json" >/dev/null \
-  || fail "the stateful board did not retain the captain Status"
-pass "a second board write preserves the captain Status"
+  || fail "the multi-field card did not land every change: $(jq -c '.data.user.projectV2.items.nodes[] | select(.id == "created-item")' "$case_dir/board-state.json")"
+[ "$(grep -c "node(id:\$itemId)" "$case_dir/gh.log")" -eq 1 ] \
+  || fail "a multi-field card was read more than once before writing"
+[ "$(grep -c 'query=mutation(' "$case_dir/gh.log")" -eq 2 ] \
+  || fail "a multi-field card took more than one creation-plus-write request: $(grep -c 'query=mutation(' "$case_dir/gh.log")"
+[ -f "$case_dir/home/state/.helm-sync-backlog.sha256" ] \
+  || fail "a converged multi-field run did not advance the sync debounce state"
+[ -s "$case_dir/home/state/.helm-board-poll" ] \
+  || fail "a converged multi-field run did not update the board poll signature"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post multi-field poll failed: $out"
+[ -z "$out" ] || fail "a multi-field write was read back as a captain edit: $out"
+pass "a card needing text and several field writes converges in one run"
 
 case_dir="$TMP_ROOT/bounded-mutation"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
