@@ -849,6 +849,10 @@ It listens for `OnClipboardChange` (Windows' clipboard-change-listener API) rath
 `Win+PrtScn` specifically bypasses the clipboard and writes straight to a `Pictures\Screenshots` file, so a clipboard listener never sees captures taken that way; if that is the captain's capture habit, the trigger needs to become a folder watch on that path instead - the upload/envelope body is unchanged either way.
 Fill in the host, remote drop directory, and SSH user placeholders at the top of the script before using it.
 
+`bin/captain-input-linux-capture.sh` is the Linux/Wayland equivalent, a reference bash script using `wl-clipboard` (`wl-paste`) instead of the Win32 clipboard APIs.
+Unlike the Windows script, it is meant to be triggered once per deliberate keypress rather than run as a persistent clipboard-change listener - a captain-side Hyprland keybind can scope the trigger to one specific SSH terminal window (falling back to normal paste everywhere else and whenever the clipboard doesn't hold an image), keeping this script itself agnostic to how it was invoked.
+Fill in the same host, remote drop directory, and SSH user placeholders at the top of the script before using it.
+
 `bin/fm-captain-input-watch.sh` is the registered check body.
 On each poll it lists `state/captain-drop/*.json`, skips any envelope or payload file younger than a short quiet period (still-growing / mid-transfer, using the same age-of-mtime check the rest of the watcher already uses), and for each complete envelope enqueues a wake-queue record keyed `captain-input:<id>` - a distinct key per drop, so multiple simultaneous drops each survive the queue's per-key drain dedup rather than collapsing into one - then moves the envelope and its payload into `state/captain-drop/.consumed/` so a later re-scan never reports the same drop twice.
 It also prints one summary line when at least one envelope was reported, which is what drives the watcher's own generic wake-and-exit for that check (the same "print one line only when firstmate should wake" contract every registered check follows, AGENTS.md section 7).
