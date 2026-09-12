@@ -191,7 +191,7 @@ run_sync() {  # <case-dir> <fakebin> [--force]
   local case_dir=$1 fb=$2 arg=${3:-}
   local -a a=()
   [ -z "$arg" ] || a+=("$arg")
-  [ "${FM_FAKE_KEEP_BOARD_STATE:-}" = 1 ] || cp "$case_dir/board.json" "$case_dir/board-state.json"
+  cp "$case_dir/board.json" "$case_dir/board-state.json"
   if [ -n "${FM_FAKE_BOARD_PAGE_2:-}" ]; then
     if jq -s '.[0] as $first | .[1] as $second
       | $first
