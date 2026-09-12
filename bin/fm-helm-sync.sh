@@ -492,12 +492,12 @@ write_card() {
   [ -n "$PLAN_DRAFT_ID" ] || [ "${#PLAN_FIELD_IDS[@]}" -gt 0 ] || return 0
   guard_board_write "$item_id" || return 1
   if [ -n "$PLAN_DRAFT_ID" ]; then
-    vars='$draftIssueId:ID!, $title:String!, $body:String!'
-    ops='draft:updateProjectV2DraftIssue(input:{draftIssueId:$draftIssueId,title:$title,body:$body}){draftIssue{id}}'
+    vars="\$draftIssueId:ID!, \$title:String!, \$body:String!"
+    ops="draft:updateProjectV2DraftIssue(input:{draftIssueId:\$draftIssueId,title:\$title,body:\$body}){draftIssue{id}}"
     args+=(--field "draftIssueId=$PLAN_DRAFT_ID" --field "title=$PLAN_DRAFT_TITLE" --field "body=$PLAN_DRAFT_BODY")
   fi
   if [ "${#PLAN_FIELD_IDS[@]}" -gt 0 ]; then
-    vars="${vars:+$vars, }"'$projectId:ID!, $itemId:ID!'
+    vars="${vars:+$vars, }\$projectId:ID!, \$itemId:ID!"
     args+=(--field "projectId=$PROJECT_ID" --field "itemId=$item_id")
     for i in "${!PLAN_FIELD_IDS[@]}"; do
       vars="$vars, \$f$i:ID!, \$o$i:String!"
