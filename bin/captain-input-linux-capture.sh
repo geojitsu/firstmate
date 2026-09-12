@@ -79,7 +79,7 @@ mime=$(wl-paste --list-types 2>/dev/null | grep '^image/' | head -1)
 case "$mime" in
     image/png) ext=png ;;
     image/jpeg) ext=jpg ;;
-    image/*) ext=${mime#image/} ;;
+    *) fail "clipboard image type is unsupported: $mime" ;;
 esac
 
 # Unique per invocation, not just per second - see the concurrency note
