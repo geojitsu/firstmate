@@ -77,7 +77,6 @@ DISPATCH_FILE="$STATE_PATH/.helm-dispatch-requests"
 CARDS_FILE="$STATE_PATH/helm-cards.tsv"
 DELETED_FILE="$STATE_PATH/helm-deleted.tsv"
 POLL_FILE="$STATE_PATH/.helm-board-poll"
-RESUME_FORCE_FILE="$STATE_PATH/.helm-sync-resume-force"
 LOCK_FILE="$STATE_PATH/.helm-sync.lock"
 TMP_DIR=
 LOCK_HELD=false
@@ -143,14 +142,8 @@ done
 command -v jq >/dev/null 2>&1 || helm_fail_open "jq is unavailable"
 command -v gh >/dev/null 2>&1 || helm_fail_open "gh is unavailable"
 
-if [ -L "$HASH_FILE" ] || [ -L "$DISPATCH_FILE" ] || [ -L "$CARDS_FILE" ] || [ -L "$DELETED_FILE" ] || [ -L "$POLL_FILE" ] || [ -L "$RESUME_FORCE_FILE" ]; then
+if [ -L "$HASH_FILE" ] || [ -L "$DISPATCH_FILE" ] || [ -L "$CARDS_FILE" ] || [ -L "$DELETED_FILE" ] || [ -L "$POLL_FILE" ]; then
   helm_fail_open "refusing symlinked Helm state"
-fi
-
-# A partial forced run leaves this marker so the next run, however it is
-# started, finishes that forced read before a completed run clears it.
-if [ "$FORCE" -eq 0 ] && [ -f "$RESUME_FORCE_FILE" ]; then
-  FORCE=1
 fi
 
 # shellcheck source=bin/fm-helm-lib.sh
@@ -256,11 +249,7 @@ ITEM_GRAPHQL_QUERY='query($itemId:ID!) {
   }
 }'
 
-# One run's whole GitHub budget, board read and writes alike. It must fit
-# inside the watcher's 30-second timeout; a run that needs more stops cleanly
-# between cards and the next run continues.
-SYNC_BUDGET_SECS=25
-SYNC_DEADLINE=$(( $(date +%s) + SYNC_BUDGET_SECS ))
+SYNC_DEADLINE=$(( $(date +%s) + 25 ))
 PAGE_COUNT=0
 CURSOR=
 PAGINATION_DEADLINE=$SYNC_DEADLINE
@@ -367,39 +356,49 @@ DISPATCH_OPTION_ID=$(option_id Status "$DISPATCH_STATUS")
 [ -n "$STATUS_QUEUED_ID" ] && [ -n "$STATUS_IN_FLIGHT_ID" ] && [ -n "$STATUS_WAITING_ID" ] && [ -n "$STATUS_DONE_ID" ] && [ -n "$DISPATCH_OPTION_ID" ] \
   || helm_fail_open "required Helm Status options are unavailable"
 
-
 TMP_RESPONSE="$TMP_DIR/response.json"
 TMP_RESPONSE_ERROR="$TMP_DIR/response.error"
+WRITE_ITEM_ID=
+WRITE_CARD=
+WRITE_GUARD=true
 CREATED_ITEM_ID=
+CREATED_CARD=
 
-# One card as the guard compares it: text plus every named single-select value.
-SNAPSHOT_JQ='{
-  title:(.content.title // ""),
-  body:(.content.body // ""),
-  fields:([.fieldValues.nodes[]?
-    | {field:(.field.name // ""),name:(.name // ""),optionId:(.optionId // "")}
-    | select(.field != "")]
-    | sort_by(.field, .optionId, .name))
-}'
+board_item_snapshot() {
+  jq -c '{
+    title:(.content.title // ""),
+    body:(.content.body // ""),
+    fields:([.fieldValues.nodes[]?
+      | {field:(.field.name // ""),name:(.name // ""),optionId:(.optionId // "")}
+      | select(.field != "")]
+      | sort_by(.field, .optionId, .name))
+  }' | fm_helm_sha256_stdin
+}
 
-# guard_board_write <item-id> <expected-snapshot>
-# One pre-write read of the card.  If it no longer matches the board read that
-# planned this run's writes, the captain edited it meanwhile: leave the card
-# alone and ask for a forced reconciliation.
-# Accepted containment: GitHub Projects has no conditional or versioned
-# mutation, so a captain edit can still land between this read and the write.
-# The next reverse poll detects that divergence and raises the reconcile wake.
+set_write_snapshot() {
+  WRITE_ITEM_ID=$1
+  WRITE_CARD=$2
+  WRITE_GUARD=${3:-true}
+}
+
 guard_board_write() {
-  local item_id=$1 expected=$2 remaining actual
+  local item_id=$1 remaining expected actual current
+  [ "$WRITE_ITEM_ID" = "$item_id" ] || return 1
+  [ "$WRITE_GUARD" = true ] || return 0
+  # Accepted containment: GitHub Projects has no conditional or versioned
+  # mutation, so a captain edit can still land between this read and the write.
+  # The next reverse poll detects that divergence and raises the reconcile wake.
   remaining=$(( SYNC_DEADLINE - $(date +%s) ))
   [ "$remaining" -gt 0 ] || return 1
   if ! run_gh_bounded "$remaining" gh api graphql \
     --field "query=$ITEM_GRAPHQL_QUERY" \
-    --raw-field "itemId=$item_id" >"$TMP_RESPONSE" 2>"$TMP_RESPONSE_ERROR"; then
+    --field "itemId=$item_id" >"$TMP_RESPONSE" 2>"$TMP_RESPONSE_ERROR"; then
     return 1
   fi
   jq -e '((.errors // []) | length == 0) and (.data.node != null)' "$TMP_RESPONSE" >/dev/null 2>&1 || return 1
-  actual=$(jq -er ".data.node | ($SNAPSHOT_JQ) | tojson" "$TMP_RESPONSE") || return 1
+  current=$(jq -c '.data.node' "$TMP_RESPONSE") || return 1
+  expected=$(printf '%s\n' "$WRITE_CARD" | board_item_snapshot) || return 1
+  actual=$(printf '%s\n' "$current" | board_item_snapshot) || return 1
   if [ "$expected" != "$actual" ]; then
     printf 'check: Helm board and backlog both changed; run bin/fm-helm-sync.sh --force to reconcile\n'
     exit 0
@@ -417,106 +416,102 @@ graphql_mutation() {
   jq -e '(.errors // []) | length == 0' "$TMP_RESPONSE" >/dev/null 2>&1
 }
 
-# ack_card <item-id> <new:0|1> <draft:0|1> <title> <body> [<field> <name> <option-id>]...
-# The acknowledged board mirrors every write this run lands, so the poll
-# signature published at the end (or at a partial stop) matches the board the
-# next run reads instead of reporting this run's own writes as captain edits.
-# One jq pass per card: append the card when this run created it, replace its
-# text when that was written, then apply each field write in turn.
-ack_card() {
-  local item_id=$1 new=$2 draft=$3 title=$4 body=$5 next
-  shift 5
+ack_field() {
+  local item_id=$1 field=$2 name=$3 option_id=$4 next
   next="$ACK_BOARD_JSON.next"
-  jq --arg item "$item_id" --arg new "$new" --arg draft "$draft" --arg title "$title" --arg body "$body" '
-    ($ARGS.positional | [range(0; length; 3) as $i | {field: .[$i], name: .[$i + 1], optionId: .[$i + 2]}]) as $writes
-    | .data.user.projectV2.items.nodes |=
-        (if $new == "1" then . + [{id:$item,content:{title:$title,body:$body},fieldValues:{nodes:[]}}] else . end)
-    | .data.user.projectV2.items.nodes |= map(
-        if .id != $item then . else
-          (if $draft == "1" then .content.title = $title | .content.body = $body else . end)
-          | reduce $writes[] as $w (.;
-              .fieldValues.nodes |=
-                if any(.[]?; .field.name == $w.field) then
-                  map(if .field.name == $w.field then .name = $w.name | .optionId = $w.optionId else . end)
-                else . + [{field:{name:$w.field},name:$w.name,optionId:$w.optionId}] end)
-        end)' "$ACK_BOARD_JSON" --args "$@" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON"
+  jq --arg item "$item_id" --arg field "$field" --arg name "$name" --arg option "$option_id" '
+    .data.user.projectV2.items.nodes |= map(
+      if .id == $item then
+        .fieldValues.nodes |=
+          if any(.[]?; .field.name == $field) then
+            map(if .field.name == $field then .name = $name | .optionId = $option else . end)
+          else . + [{field:{name:$field},name:$name,optionId:$option}] end
+      else . end)' "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON" || return 1
+  if [ "$WRITE_ITEM_ID" = "$item_id" ]; then
+    WRITE_CARD=$(jq -c --arg item "$item_id" '[.data.user.projectV2.items.nodes[] | select(.id == $item)][0]' "$ACK_BOARD_JSON") || return 1
+  fi
 }
 
-# Field writes planned for the card in hand.  write_card sends them all, with
-# the card text when that changed too, as ONE GraphQL request: a card costs at
-# most one pre-write read plus one mutation however many fields it needs, and
-# a card this run just created needs no pre-write read at all.
+ack_draft() {
+  local item_id=$1 title=$2 body=$3 next
+  next="$ACK_BOARD_JSON.next"
+  jq --arg item "$item_id" --arg title "$title" --arg body "$body" '
+    .data.user.projectV2.items.nodes |= map(
+      if .id == $item then .content.title = $title | .content.body = $body else . end)' \
+    "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON" || return 1
+  if [ "$WRITE_ITEM_ID" = "$item_id" ]; then
+    WRITE_CARD=$(jq -c --arg item "$item_id" '[.data.user.projectV2.items.nodes[] | select(.id == $item)][0]' "$ACK_BOARD_JSON") || return 1
+  fi
+}
+
+ack_new_draft() {
+  local item_id=$1 title=$2 body=$3 next
+  next="$ACK_BOARD_JSON.next"
+  jq --arg item "$item_id" --arg title "$title" --arg body "$body" '
+    .data.user.projectV2.items.nodes += [{id:$item,content:{title:$title,body:$body},fieldValues:{nodes:[]}}]' \
+    "$ACK_BOARD_JSON" >"$next" && mv -f -- "$next" "$ACK_BOARD_JSON" || return 1
+  if [ "$WRITE_ITEM_ID" = "$item_id" ]; then
+    WRITE_CARD=$(jq -c --arg item "$item_id" '[.data.user.projectV2.items.nodes[] | select(.id == $item)][0]' "$ACK_BOARD_JSON") || return 1
+  fi
+}
+
+PLAN_DRAFT_ID=
+PLAN_DRAFT_TITLE=
+PLAN_DRAFT_BODY=
 PLAN_FIELD_IDS=()
-PLAN_FIELD_OPTIONS=()
 PLAN_FIELD_NAMES=()
 PLAN_FIELD_VALUES=()
-
-plan_field() {  # <field-id> <option-id> <field-name> <option-name>
-  PLAN_FIELD_IDS+=("$1")
-  PLAN_FIELD_OPTIONS+=("$2")
-  PLAN_FIELD_NAMES+=("$3")
-  PLAN_FIELD_VALUES+=("$4")
-}
+PLAN_FIELD_OPTIONS=()
 
 plan_reset() {
+  PLAN_DRAFT_ID=
+  PLAN_DRAFT_TITLE=
+  PLAN_DRAFT_BODY=
   PLAN_FIELD_IDS=()
-  PLAN_FIELD_OPTIONS=()
   PLAN_FIELD_NAMES=()
   PLAN_FIELD_VALUES=()
+  PLAN_FIELD_OPTIONS=()
 }
 
-# plan_names <draft-id-or-empty> - the planned writes as one diagnostic list.
-plan_names() {
-  local names=
-  if [ "${#PLAN_FIELD_NAMES[@]}" -gt 0 ]; then
-    names=$(IFS=,; printf '%s' "${PLAN_FIELD_NAMES[*]}")
-    names=${names//,/, }
-  fi
-  [ -z "$1" ] || names="${names:+$names, }card text"
-  printf '%s\n' "$names"
+plan_draft() {
+  PLAN_DRAFT_ID=$1
+  PLAN_DRAFT_TITLE=$2
+  PLAN_DRAFT_BODY=$3
 }
 
-# write_card <item-id> <new:0|1> <draft-id-or-empty> <title> <body>
-# Land every planned write for one card in one request, then mirror them, and
-# the card itself when this run created it, into the acknowledged board.
-# Returns 1 when nothing landed; the plan is kept so the caller's diagnostic
-# names the writes.  Every variable travels as a raw string: a typed field
-# would turn an all-digit option id into a number.
+plan_field() {
+  PLAN_FIELD_IDS+=("$1")
+  PLAN_FIELD_NAMES+=("$2")
+  PLAN_FIELD_VALUES+=("$3")
+  PLAN_FIELD_OPTIONS+=("$4")
+}
+
 write_card() {
-  local item_id=$1 new=$2 draft_id=$3 title=$4 body=$5 i vars='' ops=''
+  local item_id=$1 i vars='' ops=''
   local -a args=()
-  if [ -n "$draft_id" ]; then
-    # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
+  [ -n "$PLAN_DRAFT_ID" ] || [ "${#PLAN_FIELD_IDS[@]}" -gt 0 ] || return 0
+  guard_board_write "$item_id" || return 1
+  if [ -n "$PLAN_DRAFT_ID" ]; then
     vars='$draftIssueId:ID!, $title:String!, $body:String!'
-    # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
-    ops='draft: updateProjectV2DraftIssue(input:{draftIssueId:$draftIssueId, title:$title, body:$body}) { draftIssue { id } }'
-    args+=(--raw-field "draftIssueId=$draft_id" --raw-field "title=$title" --raw-field "body=$body")
+    ops='draft:updateProjectV2DraftIssue(input:{draftIssueId:$draftIssueId,title:$title,body:$body}){draftIssue{id}}'
+    args+=(--field "draftIssueId=$PLAN_DRAFT_ID" --field "title=$PLAN_DRAFT_TITLE" --field "body=$PLAN_DRAFT_BODY")
   fi
   if [ "${#PLAN_FIELD_IDS[@]}" -gt 0 ]; then
-    # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
     vars="${vars:+$vars, }"'$projectId:ID!, $itemId:ID!'
-    args+=(--raw-field "projectId=$PROJECT_ID" --raw-field "itemId=$item_id")
+    args+=(--field "projectId=$PROJECT_ID" --field "itemId=$item_id")
     for i in "${!PLAN_FIELD_IDS[@]}"; do
       vars="$vars, \$f$i:ID!, \$o$i:String!"
-      ops="$ops w$i: updateProjectV2ItemFieldValue(input:{projectId:\$projectId, itemId:\$itemId, fieldId:\$f$i, value:{singleSelectOptionId:\$o$i}}) { projectV2Item { id } }"
-      args+=(--raw-field "f$i=${PLAN_FIELD_IDS[$i]}" --raw-field "o$i=${PLAN_FIELD_OPTIONS[$i]}")
+      ops="$ops w$i:updateProjectV2ItemFieldValue(input:{projectId:\$projectId,itemId:\$itemId,fieldId:\$f$i,value:{singleSelectOptionId:\$o$i}}){projectV2Item{id}}"
+      args+=(--field "f$i=${PLAN_FIELD_IDS[$i]}" --field "o$i=${PLAN_FIELD_OPTIONS[$i]}")
     done
   fi
-  if [ -z "$ops" ]; then
-    [ "$new" = 0 ] || ack_card "$item_id" 1 0 "$title" "$body" || helm_fail_open "could not stage Helm board acknowledgement"
-    return 0
+  graphql_mutation "mutation($vars){$ops}" "${args[@]}" || return 1
+  if [ -n "$PLAN_DRAFT_ID" ]; then
+    ack_draft "$item_id" "$PLAN_DRAFT_TITLE" "$PLAN_DRAFT_BODY" || return 1
   fi
-  graphql_mutation "mutation($vars) {$ops }" "${args[@]}" || return 1
-  local -a acks=()
-  if [ "${#PLAN_FIELD_IDS[@]}" -gt 0 ]; then
-    for i in "${!PLAN_FIELD_IDS[@]}"; do
-      acks+=("${PLAN_FIELD_NAMES[$i]}" "${PLAN_FIELD_VALUES[$i]}" "${PLAN_FIELD_OPTIONS[$i]}")
-    done
-  fi
-  ack_card "$item_id" "$new" "${draft_id:+1}" "$title" "$body" ${acks[@]+"${acks[@]}"} \
-    || helm_fail_open "could not stage Helm board acknowledgement"
-  plan_reset
-  CARDS_WRITTEN=$((CARDS_WRITTEN + 1))
+  for i in "${!PLAN_FIELD_IDS[@]}"; do
+    ack_field "$item_id" "${PLAN_FIELD_NAMES[$i]}" "${PLAN_FIELD_VALUES[$i]}" "${PLAN_FIELD_OPTIONS[$i]}" || return 1
+  done
 }
 
 create_draft() {
@@ -534,12 +529,95 @@ create_draft() {
     }
   }'
   graphql_mutation "$query" \
-    --raw-field "projectId=$PROJECT_ID" \
-    --raw-field "title=$title" \
-    --raw-field "body=$body" \
+    --field "projectId=$PROJECT_ID" \
+    --field "title=$title" \
+    --field "body=$body" \
     || return 1
-  CREATED_ITEM_ID=$(jq -r '.data.addProjectV2DraftIssue.projectItem.id // empty' "$TMP_RESPONSE") || return 1
+  CREATED_CARD=$(jq -c '.data.addProjectV2DraftIssue.projectItem // null' "$TMP_RESPONSE") || return 1
+  CREATED_ITEM_ID=$(jq -r '.id // empty' <<<"$CREATED_CARD") || return 1
   [ -n "$CREATED_ITEM_ID" ]
+}
+
+current_option_id() {
+  local item_json=$1 field_name=$2
+  jq -r --arg field "$field_name" \
+    '[.fieldValues.nodes[]? | select(.field.name == $field) | .optionId][0] // empty' \
+    <<<"$item_json"
+}
+
+current_option_name() {
+  local item_json=$1 field_name=$2
+  jq -r --arg field "$field_name" \
+    '[.fieldValues.nodes[]? | select(.field.name == $field) | .name][0] // empty' \
+    <<<"$item_json"
+}
+
+record_for_id() {
+  jq -c --arg id "$1" '[.[] | select(.id == $id)][0] // null' "$BACKLOG_JSON"
+}
+
+record_home_path() {
+  jq -r --arg id "$1" '[.[] | select(.id == $id) | .home_backlog][0] // empty' "$BACKLOG_JSON" \
+    | sed 's#/data/backlog\.md$##'
+}
+
+record_kind() {
+  local record=$1 hold_kind hold_reason
+  hold_kind=$(jq -r '.hold_kind // empty' <<<"$record")
+  hold_reason=$(jq -r '.hold_reason // empty' <<<"$record")
+  if [ "$hold_kind" = captain ] && [ -n "$hold_reason" ]; then
+    printf '%s\n' decision
+    return 0
+  fi
+  case "$(jq -r '.kind // "ship"' <<<"$record")" in
+    task|scout) printf '%s\n' investigation ;;
+    *) printf '%s\n' ship ;;
+  esac
+}
+
+record_project() {
+  local repo task_id
+  repo=$(jq -r '.repo // ""' <<<"$1")
+  task_id=$(jq -r '.id' <<<"$1")
+  case "$repo" in
+    firetabs|geojitsu/firetabs) printf '%s\n' firetabs ;;
+    BetterBlueToo|geojitsu/BetterBlueToo) printf '%s\n' BetterBlueToo ;;
+    firstmate|geojitsu/firstmate) printf '%s\n' firstmate ;;
+    nocout|dc-noc/nocout) printf '%s\n' nocout ;;
+    cryptoseacurrents|copium/cryptoseacurrents) printf '%s\n' cryptoseacurrents ;;
+    other) printf '%s\n' other ;;
+    *)
+      printf 'fm-helm-sync: unsupported repository %s for %s; using other\n' "$repo" "$task_id" >&2
+      printf '%s\n' other
+      ;;
+  esac
+}
+
+record_status() {
+  local record=$1 section kind
+  section=$(jq -r '.state' <<<"$record")
+  kind=$(record_kind "$record")
+  if [ "$section" = "done" ]; then
+    printf '%s\n' Done
+  elif [ "$kind" = decision ]; then
+    printf '%s\n' "Waiting on you"
+  elif [ "$section" = in_flight ]; then
+    printf '%s\n' "In flight"
+  else
+    printf '%s\n' Queued
+  fi
+}
+
+# priority n (0-4, or unset) -> P<n>, lossless. Unset sorts as 3.
+priority_option_name() {
+  case "$1" in
+    0) printf 'P0\n' ;;
+    1) printf 'P1\n' ;;
+    2) printf 'P2\n' ;;
+    3) printf 'P3\n' ;;
+    4) printf 'P4\n' ;;
+    *) printf 'P3\n' ;;
+  esac
 }
 
 # P<n> board option name -> n, or empty when not a recognised priority option.
@@ -552,6 +630,47 @@ priority_from_option() {
     P4) printf '4\n' ;;
     *) printf '\n' ;;
   esac
+}
+
+write_card_body() {
+  local record=$1 output=$2 id kind type repo priority filed hold blocked report pr line
+  id=$(jq -r '.id' <<<"$record")
+  kind=$(record_kind "$record")
+  case "$kind" in
+    ship) type='ship - produces a change and a PR' ;;
+    investigation) type='investigation - produces knowledge, not code' ;;
+    decision) type='decision - needs your call before anything moves' ;;
+  esac
+  repo=$(jq -r '.repo // "-"' <<<"$record")
+  [ -n "$repo" ] || repo=-
+  priority=$(priority_option_name "$(jq -r '.priority // "3"' <<<"$record")")
+  filed=$(jq -r '.since // .reported // .done // .merged // "unknown"' <<<"$record")
+  hold=$(jq -r '.hold_reason // empty' <<<"$record")
+  blocked=$(jq -r '(.blocked_by_ids // []) | join(", ")' <<<"$record")
+  report=$(jq -r '.report_path // empty' <<<"$record")
+  pr=$(jq -r '.pr_url // empty' <<<"$record")
+  if [ -z "$report" ] && [ -f "$DATA_PATH/$id/report.md" ]; then
+    report="data/$id/report.md"
+  fi
+  {
+    printf '%s\n\n' "\`$id\`"
+    if [ "$kind" = decision ] && [ -n "$hold" ]; then
+      printf '## What you need to decide\n\n%s\n\n' "$hold"
+    fi
+    printf '## Facts\n\n'
+    printf -- '- **Repo:** %s\n' "$repo"
+    printf -- '- **Type:** %s\n' "$type"
+    printf -- '- **Priority:** %s\n' "$priority"
+    printf -- '- **Filed:** %s\n' "$filed"
+    [ -z "$blocked" ] || printf -- '- **Blocked by:** %s\n' "$blocked"
+    [ -z "$report" ] || printf -- '%s\n' "- **Report:** \`$report\`"
+    [ -z "$pr" ] || printf -- '- **PR:** %s\n' "$pr"
+    printf '\n## Notes\n\n'
+    while IFS= read -r line; do
+      printf '%s\n' "$line"
+    done < <(jq -r '.body_lines[]?' <<<"$record")
+    printf '%b\n' "\n---\n_Source of truth: \`data/backlog.md\` in the owning firstmate home._\n"
+  } >"$output"
 }
 
 marker_matches() {
@@ -568,31 +687,16 @@ marker_replace() {
   fi
   printf '%s\t%s\t%s\t%s\n' "$task_id" "$item_id" "$option" "$fingerprint" >>"$marker_tmp" || return 1
   chmod 0600 "$marker_tmp" || return 1
-  mv -f -- "$marker_tmp" "$DISPATCH_FILE" || return 1
-  marker_tasks_reload
+  mv -f -- "$marker_tmp" "$DISPATCH_FILE"
 }
 
 marker_remove() {
   local task_id=$1 marker_tmp
   [ -f "$DISPATCH_FILE" ] || return 0
-  case "$MARKER_TASKS" in
-    *"<$task_id>"*) ;;
-    *) return 0 ;;
-  esac
   marker_tmp=$(mktemp "$TMP_DIR/marker.XXXXXX") || return 1
   awk -F '\t' -v task="$task_id" '$1 != task' "$DISPATCH_FILE" >"$marker_tmp" || return 1
   chmod 0600 "$marker_tmp" || return 1
-  mv -f -- "$marker_tmp" "$DISPATCH_FILE" || return 1
-  marker_tasks_reload
-}
-
-# MARKER_TASKS lists every task with a dispatch marker as "<id>" tokens, so the
-# per-record marker_remove decides in-shell instead of rewriting the file.
-MARKER_TASKS=
-marker_tasks_reload() {
-  MARKER_TASKS=
-  [ -f "$DISPATCH_FILE" ] || return 0
-  MARKER_TASKS=$(awk -F '\t' '{ printf "<%s>", $1 }' "$DISPATCH_FILE")
+  mv -f -- "$marker_tmp" "$DISPATCH_FILE"
 }
 
 queue_has_key() {
@@ -650,11 +754,6 @@ fingerprint_of() {
   printf '%s\0%s\0%s\0%s\0%s\0%s' "$1" "$2" "$3" "$4" "$5" "$6" | fm_helm_sha256_stdin
 }
 
-decode_base64() {
-  if printf '%s' "$1" | base64 --decode 2>/dev/null; then return 0; fi
-  printf '%s' "$1" | base64 -D 2>/dev/null
-}
-
 export FM_ROOT_OVERRIDE="$FM_ROOT_PATH"
 export FM_HOME="$FM_HOME_PATH"
 export STATE="$STATE_PATH"
@@ -686,224 +785,116 @@ fi
 NEW_DELETED="$TMP_DIR/new-deleted.tsv"
 : >"$NEW_DELETED"
 NOW_EPOCH=$(date +%s)
-marker_tasks_reload
+
+old_card_line() {
+  awk -F '\t' -v t="$1" '$1 == t { print; exit }' "$OLD_CARDS"
+}
+
+old_deleted_line() {
+  awk -F '\t' -v t="$1" '$1 == t { print; exit }' "$OLD_DELETED"
+}
 
 retain_deleted_card() {
   printf '%s\t%s\n' "$1" "$2" >>"$NEW_DELETED"
 }
 
-# Task ids with a report under this home's data/, for the card's Report line.
-REPORT_IDS='[]'
-for report in "$DATA_PATH"/*/report.md; do
-  [ -f "$report" ] || continue
-  report=${report%/report.md}
-  REPORT_IDS=$(jq -c --arg id "${report##*/}" '. + [$id]' <<<"$REPORT_IDS") \
-    || helm_fail_open "could not index task reports"
-done
+BOARD_ITEM_IDS="$TMP_DIR/board-item-ids"
+jq -r '.data.user.projectV2.items.nodes[].id' "$BOARD_JSON" | sort -u >"$BOARD_ITEM_IDS" \
+  || helm_fail_open "could not index current Helm cards"
 
-# Everything a backlog record needs, derived in one jq pass over the backlog
-# union, the board, and the prior caches.  One line per record, unit-separated
-# so an empty column survives `read`, in this column order:
-#   1 task id  2 owning home  3 state  4 hold kind  5 project supported (1/0)
-#   6 raw repo  7-9 desired Project, Kind, Status names  10 priority n
-#   11 desired Priority name  12-15 desired Project, Kind, Priority, Status
-#   option ids  16 card state (none|one|dup)  17 item id  18 content type
-#   19 content node id  20 card text differs (1/0)  21-22 current Status name
-#   and option id  23 current Priority name  24-26 current Project, Kind,
-#   Priority option ids  27-28 cached item id and fingerprint  29 cached item
-#   still on the board (1/0)  30 deletion tombstone item id  31 guard snapshot
-#   32 base64 of "<title>\n<body>"
-# shellcheck disable=SC2016 # jq variables must remain literal.
-RECORD_PLAN_JQ='
-def rows($text): $text | split("\n") | map(select(length > 0) | split("\t"));
-def fieldval($n): ([.fieldValues.nodes[]? | select(.field.name == $n)][0]) // {};
-def snapshot: '"$SNAPSHOT_JQ"';
-def project_name:
-  (.repo // "") as $repo
-  | if $repo | IN("firetabs", "geojitsu/firetabs") then "firetabs"
-    elif $repo | IN("BetterBlueToo", "geojitsu/BetterBlueToo") then "BetterBlueToo"
-    elif $repo | IN("firstmate", "geojitsu/firstmate") then "firstmate"
-    elif $repo | IN("nocout", "dc-noc/nocout") then "nocout"
-    elif $repo | IN("cryptoseacurrents", "copium/cryptoseacurrents") then "cryptoseacurrents"
-    elif $repo == "other" then "other"
-    else null end;
-def kind_name:
-  if (.hold_kind // "") == "captain" and (.hold_reason // "") != "" then "decision"
-  elif (.kind // "ship") | IN("task", "scout") then "investigation"
-  else "ship" end;
-# priority n (0-4, or unset) -> P<n>, lossless. Unset sorts as 3.
-def priority_name: (.priority // "3") | tostring | if IN("0", "1", "2", "3", "4") then "P" + . else "P3" end;
-def status_name($kind):
-  if .state == "done" then "Done"
-  elif $kind == "decision" then "Waiting on you"
-  elif .state == "in_flight" then "In flight"
-  else "Queued" end;
-def card_body($kind; $priority; $report):
-  .id as $id
-  | ((.repo // "-") | if . == "" then "-" else . end) as $repo
-  | ({ship: "ship - produces a change and a PR",
-      investigation: "investigation - produces knowledge, not code",
-      decision: "decision - needs your call before anything moves"}[$kind]) as $type
-  | (.since // .reported // .done // .merged // "unknown") as $filed
-  | (.hold_reason // "") as $hold
-  | ((.blocked_by_ids // []) | join(", ")) as $blocked
-  | (.pr_url // "") as $pr
-  | "`\($id)`\n\n"
-    + (if $kind == "decision" and $hold != "" then "## What you need to decide\n\n\($hold)\n\n" else "" end)
-    + "## Facts\n\n"
-    + "- **Repo:** \($repo)\n"
-    + "- **Type:** \($type)\n"
-    + "- **Priority:** \($priority)\n"
-    + "- **Filed:** \($filed)\n"
-    + (if $blocked == "" then "" else "- **Blocked by:** \($blocked)\n" end)
-    + (if $report == "" then "" else "- **Report:** `\($report)`\n" end)
-    + (if $pr == "" then "" else "- **PR:** \($pr)\n" end)
-    + "\n## Notes\n\n"
-    + ([.body_lines[]? | . + "\n"] | join(""))
-    + "\n---\n_Source of truth: `data/backlog.md` in the owning firstmate home._\n\n"
-  | sub("\n+$"; "");
-$board[0].data.user.projectV2.fields.nodes as $fields
-| def option_id($field; $wanted):
-    [$fields[] | select(.name == $field and .__typename == "ProjectV2SingleSelectField")
-     | .options[] | select(.name == $wanted) | .id][0] // "";
-  ($board[0].data.user.projectV2.items.nodes | map(.id)) as $item_ids
-| ($board[0].data.user.projectV2.items.nodes
-   | map(select(.content.__typename == "DraftIssue" or .content.__typename == "Issue"))) as $cards
-| rows($old) as $old_rows
-| rows($deleted) as $deleted_rows
-| .[]
-| . as $r
-| kind_name as $kind
-| priority_name as $priority
-| status_name($kind) as $status
-| project_name as $project_name
-| ($project_name // "other") as $project
-| ([$cards[] | select((.content.body // "") | split("\n")[0] == ("`" + $r.id + "`"))]) as $matches
-| ($matches[0] // null) as $card
-| ([$old_rows[] | select(.[0] == $r.id)][0] // []) as $old
-| ([$deleted_rows[] | select(.[0] == $r.id)][0] // []) as $tombstone
-| ((.report_path // "") | if . != "" then . elif ($reports | index($r.id)) != null then "data/\($r.id)/report.md" else "" end) as $report
-| card_body($kind; $priority; $report) as $body
-| [ $r.id,
-    ((.home_backlog // "") | sub("/data/backlog\\.md$"; "")),
-    (.state // ""),
-    (.hold_kind // ""),
-    (if $project_name == null then "0" else "1" end),
-    (.repo // ""),
-    $project, $kind, $status,
-    ((.priority // "3") | tostring),
-    $priority,
-    option_id("Project"; $project), option_id("Kind"; $kind),
-    option_id("Priority"; $priority), option_id("Status"; $status),
-    (if ($matches | length) == 1 then "one" elif ($matches | length) == 0 then "none" else "dup" end),
-    ($card.id // ""),
-    (if $card == null then "" elif $card.content.__typename == "Issue" then "issue" else "draft" end),
-    ($card.content.id // ""),
-    (if $card == null then "0"
-     elif ($card.content.title // "") == $r.title and ($card.content.body // "") == $body then "0"
-     else "1" end),
-    ($card | fieldval("Status").name // ""),
-    ($card | fieldval("Status").optionId // ""),
-    ($card | fieldval("Priority").name // ""),
-    ($card | fieldval("Project").optionId // ""),
-    ($card | fieldval("Kind").optionId // ""),
-    ($card | fieldval("Priority").optionId // ""),
-    ($old[1] // ""), ($old[4] // ""),
-    (if ($old[1] // "") != "" and ($item_ids | index($old[1])) != null then "1" else "0" end),
-    ($tombstone[1] // ""),
-    (if $card == null then "" else ($card | snapshot | tojson) end),
-    (($r.title + "\n" + $body) | @base64) ]
-| join("")
-'
-
-RECORD_PLAN="$TMP_DIR/record-plan"
-jq -r --slurpfile board "$BOARD_JSON" --rawfile old "$OLD_CARDS" --rawfile deleted "$OLD_DELETED" \
-  --argjson reports "$REPORT_IDS" "$RECORD_PLAN_JQ" "$BACKLOG_JSON" >"$RECORD_PLAN" \
-  || helm_fail_open "could not plan the Helm reconciliation"
 record_count=$(jq 'length' "$BACKLOG_JSON")
 
-# Budget a card's own writes need in the worst case (one pre-write read plus
-# one mutation, or a creation plus one mutation) before this run stops cleanly.
-CARD_WRITE_RESERVE=$(( SYNC_BUDGET_SECS / 4 ))
-[ "$CARD_WRITE_RESERVE" -ge 2 ] || CARD_WRITE_RESERVE=2
-CARDS_WRITTEN=0
-PARTIAL=false
-
-# True when the deadline cannot hold another card's writes and this run has
-# already landed some: the run then stops between cards instead of failing
-# mid-write, and the next run continues from the board as it now is.  A run
-# that landed nothing keeps going so a fruitless run still reports its failure.
-partial_stop_due() {
-  [ "$CARDS_WRITTEN" -gt 0 ] || return 1
-  [ $(( SYNC_DEADLINE - $(date +%s) )) -le "$CARD_WRITE_RESERVE" ] || return 1
-  PARTIAL=true
-}
-
-while IFS=$'\x1f' read -r task_id home_path record_state _hold_kind project_supported repo \
-    desired_project desired_kind desired_status desired_priority_n desired_priority \
-    desired_project_option desired_kind_option desired_priority_option desired_status_option \
-    card_state item_id content_type content_node_id text_differs \
-    current_status current_status_id current_priority_name \
-    current_project_id current_kind_id current_priority_id \
-    old_item_id old_fp old_item_on_board tombstone_item_id expected_snapshot text_b64; do
-  [ -n "$task_id" ] || helm_fail_open "could not plan the Helm reconciliation"
-  [ "$project_supported" = 1 ] \
-    || printf 'fm-helm-sync: unsupported repository %s for %s; using other\n' "$repo" "$task_id" >&2
-  [ -n "$desired_project_option" ] && [ -n "$desired_kind_option" ] && [ -n "$desired_priority_option" ] && [ -n "$desired_status_option" ] \
+while IFS= read -r record; do
+  plan_reset
+  task_id=$(jq -r '.id' <<<"$record")
+  home_path=$(record_home_path "$task_id")
+  title=$(jq -r '.title' <<<"$record")
+  desired_project=$(record_project "$record")
+  desired_kind=$(record_kind "$record")
+  desired_status=$(record_status "$record")
+  desired_priority_n=$(jq -r '.priority // "3"' <<<"$record")
+  desired_priority=$(priority_option_name "$desired_priority_n")
+  desired_project_option=$(option_id Project "$desired_project")
+  desired_kind_option=$(option_id Kind "$desired_kind")
+  desired_priority_option=$(option_id Priority "$desired_priority")
+  [ -n "$desired_project_option" ] && [ -n "$desired_kind_option" ] && [ -n "$desired_priority_option" ] \
     || helm_fail_open "required Helm option is unavailable for $task_id"
-  [ "$card_state" != dup ] || helm_fail_open "duplicate Helm cards for $task_id"
 
-  text=$(decode_base64 "$text_b64") || helm_fail_open "could not decode the card text for $task_id"
-  title=${text%%$'\n'*}
-  body=${text#*$'\n'}
+  card=$(jq -c --arg id "$task_id" '
+    [.data.user.projectV2.items.nodes[]
+     | select(.content.__typename == "DraftIssue" or .content.__typename == "Issue")
+     | select((.content.body // "") | split("\n")[0] == ("`" + $id + "`"))] as $cards
+    | if ($cards | length) == 1 then $cards[0]
+      elif ($cards | length) == 0 then null
+      else error("duplicate Helm cards") end
+  ' "$BOARD_JSON") || helm_fail_open "duplicate Helm cards for $task_id"
+
+  body_file="$TMP_DIR/$task_id.body"
+  write_card_body "$record" "$body_file" || helm_fail_open "could not build the card body for $task_id"
+  body=$(cat "$body_file")
   body_hash=$(printf '%s' "$body" | fm_helm_sha256_stdin)
   fingerprint=$(fingerprint_of "$desired_status" "$desired_priority" "$desired_project" "$desired_kind" "$title" "$body_hash")
-  plan_reset
-  created=0
 
-  if [ "$card_state" = none ]; then
-    if [ -n "$tombstone_item_id" ]; then
-      retain_deleted_card "$task_id" "$tombstone_item_id"
+  if [ "$card" = null ]; then
+    deleted_line=$(old_deleted_line "$task_id")
+    if [ -n "$deleted_line" ]; then
+      printf '%s\n' "$deleted_line" >>"$NEW_DELETED"
       continue
     fi
-    if [ -n "$old_item_id" ] && [ "$record_state" != "done" ] && [ "$old_item_on_board" = 0 ]; then
-      continue   # the card was deleted: delete detection below owns it.
-    fi
-    if partial_stop_due; then
-      break
+    old_line=$(old_card_line "$task_id")
+    if [ -n "$old_line" ] && [ "$(jq -r '.state' <<<"$record")" != "done" ]; then
+      old_item_id=$(printf '%s' "$old_line" | awk -F '\t' '{print $2}')
+      if [ -n "$old_item_id" ] && ! grep -F -x -q -- "$old_item_id" "$BOARD_ITEM_IDS"; then
+        continue
+      fi
     fi
     create_draft "$title" "$body" || helm_fail_open "could not create the Helm card for $task_id"
     item_id=$CREATED_ITEM_ID
-    created=1
+    [ -n "$item_id" ] || helm_fail_open "GitHub did not return the new Helm card for $task_id"
+    set_write_snapshot "$item_id" "$CREATED_CARD"
+    ack_new_draft "$item_id" "$title" "$body" || helm_fail_open "could not stage Helm board acknowledgement"
     content_type=draft
     content_node_id=""
-    # A card that did not exist when the board was read has nothing a captain
-    # could have edited since: its first field writes need no pre-write read.
-    current_status=
-    current_status_id=
-    current_priority_name=
-    current_project_id=
-    current_kind_id=
-    current_priority_id=
-  elif [ "$FORCE" -eq 0 ] && [ -n "$old_fp" ] && [ "$old_fp" = "$fingerprint" ]; then
-    # Unchanged card and no forced board read: nothing to reconcile.
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$task_id" "$item_id" "$content_node_id" "$content_type" "$fingerprint" "$NOW_EPOCH" >>"$NEW_CARDS"
-    continue
+    card=$(jq -nc --arg id "$item_id" '{id:$id, content:{__typename:"DraftIssue", id:"", title:"", body:""}, fieldValues:{nodes:[]}}')
+  else
+    item_id=$(jq -r '.id' <<<"$card")
+    content_typename=$(jq -r '.content.__typename' <<<"$card")
+    content_node_id=$(jq -r '.content.id // empty' <<<"$card")
+    if [ "$content_typename" = Issue ]; then
+      content_type=issue
+    else
+      content_type=draft
+    fi
+    set_write_snapshot "$item_id" "$card"
+
+    old_line=$(old_card_line "$task_id")
+    old_fp=$(printf '%s' "$old_line" | awk -F '\t' '{print $5}')
+    if [ "$FORCE" -eq 0 ] && [ -n "$old_line" ] && [ "$old_fp" = "$fingerprint" ]; then
+      # Unchanged card and no forced board read: nothing to reconcile.
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$task_id" "$item_id" "$content_node_id" "$content_type" "$fingerprint" "$NOW_EPOCH" >>"$NEW_CARDS"
+      continue
+    fi
+
+    current_title=$(jq -r '.content.title // empty' <<<"$card")
+    current_body=$(jq -r '.content.body // empty' <<<"$card")
+    if [ "$content_type" = issue ]; then
+      : # real issues get field-only sync; never rewrite title or body.
+    elif [ "$FORCE" -eq 1 ] && { [ "$current_title" != "$title" ] || [ "$current_body" != "$body" ]; }; then
+      # A forced read found the card text diverged: the captain edited it.
+      queue_board_event "helm-card-edit:$task_id" \
+        "check: captain edited Helm card $task_id text; reconcile it into the backlog" \
+        || helm_fail_open "could not enqueue the Helm card edit for $task_id"
+    elif [ "$current_title" != "$title" ] || [ "$current_body" != "$body" ]; then
+      draft_id=$content_node_id
+      [ -n "$draft_id" ] || helm_fail_open "Helm card $task_id has no draft issue id"
+      plan_draft "$draft_id" "$title" "$body"
+    fi
   fi
 
-  draft_write=
-  if [ "$content_type" = issue ]; then
-    : # real issues get field-only sync; never rewrite title or body.
-  elif [ "$text_differs" = 1 ] && [ "$FORCE" -eq 1 ]; then
-    # A forced read found the card text diverged: the captain edited it.
-    queue_board_event "helm-card-edit:$task_id" \
-      "check: captain edited Helm card $task_id text; reconcile it into the backlog" \
-      || helm_fail_open "could not enqueue the Helm card edit for $task_id"
-  elif [ "$text_differs" = 1 ]; then
-    draft_write=$content_node_id
-    [ -n "$draft_write" ] || helm_fail_open "Helm card $task_id has no draft issue id"
-  fi
+  current_status=$(current_option_name "$card" Status)
+  current_status_id=$(current_option_id "$card" Status)
+  current_priority_name=$(current_option_name "$card" Priority)
 
   # Priority: on a forced read, a valid board Priority that differs from the
   # backlog is a captain edit -> write it back and do not push over it.
@@ -947,71 +938,53 @@ while IFS=$'\x1f' read -r task_id home_path record_state _hold_kind project_supp
   fi
 
   if [ "$dispatch_request" = false ] && [ "$status_deferred" = false ] && [ "$current_status" != "$desired_status" ]; then
-    plan_field "$STATUS_FIELD_ID" "$desired_status_option" Status "$desired_status"
-  fi
-  [ "$current_project_id" = "$desired_project_option" ] \
-    || plan_field "$PROJECT_FIELD_ID" "$desired_project_option" Project "$desired_project"
-  [ "$current_kind_id" = "$desired_kind_option" ] \
-    || plan_field "$KIND_FIELD_ID" "$desired_kind_option" Kind "$desired_kind"
-  if [ "$push_priority" = true ] && [ "$current_priority_id" != "$desired_priority_option" ]; then
-    plan_field "$PRIORITY_FIELD_ID" "$desired_priority_option" Priority "$desired_priority"
+    desired_status_option=$(option_id Status "$desired_status")
+    plan_field "$STATUS_FIELD_ID" Status "$desired_status" "$desired_status_option"
   fi
 
-  if [ "$created" = 1 ] || [ -n "$draft_write" ] || [ "${#PLAN_FIELD_IDS[@]}" -gt 0 ]; then
-    if [ "$created" = 0 ]; then
-      if partial_stop_due; then
-        break
-      fi
-      guard_board_write "$item_id" "$expected_snapshot" \
-        || helm_fail_open "could not read Helm card $task_id before writing it"
-    fi
-    write_card "$item_id" "$created" "$draft_write" "$title" "$body" \
-      || helm_fail_open "could not update Helm $(plan_names "$draft_write") for $task_id"
+  current_project_id=$(current_option_id "$card" Project)
+  current_kind_id=$(current_option_id "$card" Kind)
+  current_priority_id=$(current_option_id "$card" Priority)
+  [ "$current_project_id" = "$desired_project_option" ] \
+    || plan_field "$PROJECT_FIELD_ID" Project "$desired_project" "$desired_project_option"
+  [ "$current_kind_id" = "$desired_kind_option" ] \
+    || plan_field "$KIND_FIELD_ID" Kind "$desired_kind" "$desired_kind_option"
+  if [ "$push_priority" = true ] && [ "$current_priority_id" != "$desired_priority_option" ]; then
+    plan_field "$PRIORITY_FIELD_ID" Priority "$desired_priority" "$desired_priority_option"
   fi
+  write_card "$item_id" || helm_fail_open "could not update Helm card for $task_id"
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$task_id" "$item_id" "$content_node_id" "$content_type" "$fingerprint" "$NOW_EPOCH" >>"$NEW_CARDS"
-done <"$RECORD_PLAN"
+done < <(jq -c '.[]' "$BACKLOG_JSON")
 
-# Board cards whose id is in no home's backlog, derived in one jq pass:
-#   1 item id  2 body line 1  3 task id ("" when line 1 is not one)
-#   4 has a backlog record (1/0)  5 current Status option id
-#   6 cached before (1/0)  7 guard snapshot
-# shellcheck disable=SC2016 # jq variables must remain literal.
-ORPHAN_PLAN_JQ='
-def rows($text): $text | split("\n") | map(select(length > 0) | split("\t"));
-def fieldval($n): ([.fieldValues.nodes[]? | select(.field.name == $n)][0]) // {};
-def snapshot: '"$SNAPSHOT_JQ"';
-($backlog[0] | map(.id)) as $record_ids
-| (rows($old) | map(.[0])) as $cached_ids
-| .data.user.projectV2.items.nodes[]
-| select(.content.__typename == "DraftIssue" or .content.__typename == "Issue")
-| ((.content.body // "") | split("\n")[0]) as $line1
-| ($line1 | if test("^`[A-Za-z0-9._-]+`$") then .[1:-1] else "" end) as $task_id
-| [ .id, $line1, $task_id,
-    (if $task_id != "" and ($record_ids | index($task_id)) != null then "1" else "0" end),
-    (fieldval("Status").optionId // ""),
-    (if $task_id != "" and ($cached_ids | index($task_id)) != null then "1" else "0" end),
-    (snapshot | tojson) ]
-| join("")
-'
+# Board cards whose id is in no home's backlog.
+if [ "$record_count" -gt 0 ]; then
+  while IFS= read -r card; do
+    item_id=$(jq -r '.id' <<<"$card")
+    body_line1=$(jq -r '(.content.body // "") | split("\n")[0]' <<<"$card")
+    case "$body_line1" in
+      '`'*'`') task_id=${body_line1#\`}; task_id=${task_id%\`} ;;
+      *)
+        printf 'fm-helm-sync: ignoring board item %s: body line 1 is not a task id\n' "$item_id" >&2
+        continue
+        ;;
+    esac
+    case "$task_id" in
+      ''|*[!A-Za-z0-9._-]*)
+        printf 'fm-helm-sync: ignoring board item %s: body line 1 is not a task id\n' "$item_id" >&2
+        continue
+        ;;
+    esac
+    record=$(record_for_id "$task_id")
+    [ "$record" != null ] && continue
 
-if [ "$PARTIAL" = false ] && [ "$record_count" -gt 0 ]; then
-  ORPHAN_PLAN="$TMP_DIR/orphan-plan"
-  jq -r --slurpfile backlog "$BACKLOG_JSON" --rawfile old "$OLD_CARDS" "$ORPHAN_PLAN_JQ" "$BOARD_JSON" >"$ORPHAN_PLAN" \
-    || helm_fail_open "could not plan the Helm orphan sweep"
-  while IFS=$'\x1f' read -r item_id _body_line1 task_id has_record current_status_id cached_before expected_snapshot; do
-    if [ -z "$task_id" ]; then
-      printf 'fm-helm-sync: ignoring board item %s: body line 1 is not a task id\n' "$item_id" >&2
-      continue
-    fi
-    [ "$has_record" = 0 ] || continue
-
+    current_status_id=$(current_option_id "$card" Status)
     # A Done card with no task is either a completed task's card or the captain
     # tidying his Done column: leave it alone either way.
     [ "$current_status_id" = "$STATUS_DONE_ID" ] && continue
 
-    if [ "$TSV_EXISTED" = true ] && [ "$cached_before" = 0 ]; then
+    if [ "$TSV_EXISTED" = true ] && [ -z "$(old_card_line "$task_id")" ]; then
       # board-driven task creation is approved design - brief step 6 and scout report section 4 both specify that a captain-created card with no backlog task raises one check wake for ordinary firstmate intake
       # Never carded before and no backlog task: a brand-new captain card.
       queue_board_event "helm-new-card:$task_id" \
@@ -1020,58 +993,48 @@ if [ "$PARTIAL" = false ] && [ "$record_count" -gt 0 ]; then
       continue
     fi
 
-    if partial_stop_due; then
-      break
-    fi
-    guard_board_write "$item_id" "$expected_snapshot" \
-      || helm_fail_open "could not read Helm card $task_id before closing it"
+    set_write_snapshot "$item_id" "$card"
     plan_reset
-    plan_field "$STATUS_FIELD_ID" "$STATUS_DONE_ID" Status Done
-    write_card "$item_id" 0 "" "" "" || helm_fail_open "could not close the missing Helm task $task_id"
+    plan_field "$STATUS_FIELD_ID" Status Done "$STATUS_DONE_ID"
+    write_card "$item_id" \
+      || helm_fail_open "could not close the missing Helm task $task_id"
     marker_remove "$task_id" || helm_fail_open "could not clear the Helm dispatch marker for $task_id"
-  done <"$ORPHAN_PLAN"
+  done < <(jq -c '.data.user.projectV2.items.nodes[] | select(.content.__typename == "DraftIssue" or .content.__typename == "Issue")' "$BOARD_JSON")
 fi
 
-# Delete detection: a previously synced card gone from the board, derived in
-# one jq pass over the prior cache:
-#   1 task id  2 cached item id  3 task state ("" when the task is gone)
-#   4 owning home  5 captain-held (1/0)  6 held or blocked (1/0)
-# shellcheck disable=SC2016 # jq variables must remain literal.
-DELETED_PLAN_JQ='
-def rows($text): $text | split("\n") | map(select(length > 0) | split("\t"));
-($board[0].data.user.projectV2.items.nodes) as $items
-| ($items | map(.id)) as $item_ids
-| ($items | map((.content.body // "") | split("\n")[0])) as $line1s
-| rows($old)[]
-| select(length >= 2 and .[0] != "" and .[1] != "")
-| .[0] as $task_id
-| select(($item_ids | index(.[1])) == null)
-| select(($line1s | index("`" + $task_id + "`")) == null)
-| ([$backlog[0][] | select(.id == $task_id)][0] // null) as $record
-| [ $task_id, .[1],
-    ($record.state // ""),
-    (($record.home_backlog // "") | sub("/data/backlog\\.md$"; "")),
-    (if ($record.hold_kind // "") == "captain" then "1" else "0" end),
-    (if ($record.hold_reason // "") != "" or (($record.blocked_by_ids // []) | length) > 0 then "1" else "0" end) ]
-| join("")
-'
+# Delete detection: a previously synced card gone from the board.
+if [ "$TSV_EXISTED" = true ]; then
+  while IFS= read -r old_line; do
+    [ -n "$old_line" ] || continue
+    task_id=$(printf '%s' "$old_line" | awk -F '\t' '{print $1}')
+    old_item_id=$(printf '%s' "$old_line" | awk -F '\t' '{print $2}')
+    [ -n "$task_id" ] && [ -n "$old_item_id" ] || continue
+    grep -F -x -q -- "$old_item_id" "$BOARD_ITEM_IDS" && continue
+    jq -e --arg id "$task_id" '
+      any(.data.user.projectV2.items.nodes[];
+        (.content.body // "") | split("\n")[0] == ("`" + $id + "`"))
+    ' "$BOARD_JSON" >/dev/null 2>&1 && continue
 
-if [ "$PARTIAL" = false ] && [ "$TSV_EXISTED" = true ]; then
-  DELETED_PLAN="$TMP_DIR/deleted-plan"
-  jq -r --slurpfile board "$BOARD_JSON" --slurpfile backlog "$BACKLOG_JSON" --rawfile old "$OLD_CARDS" "$DELETED_PLAN_JQ" \
-    <<<'null' >"$DELETED_PLAN" || helm_fail_open "could not plan the Helm deletion sweep"
-  while IFS=$'\x1f' read -r task_id old_item_id task_state home_path captain_held held; do
-    if [ -z "$task_state" ]; then
+    record=$(record_for_id "$task_id")
+    if [ "$record" = null ]; then
       continue   # card gone and no task: drop the stale line, nothing else.
     fi
-    if [ "$task_state" = "done" ] || [ "$captain_held" = 1 ]; then
+    task_state=$(jq -r '.state' <<<"$record")
+    if [ "$task_state" = "done" ]; then
+      retain_deleted_card "$task_id" "$old_item_id"
+      continue
+    fi
+    if [ "$(jq -r '.hold_kind // ""' <<<"$record")" = captain ]; then
       retain_deleted_card "$task_id" "$old_item_id"
       continue
     fi
 
-    if [ "$task_state" = in_flight ]; then
+    home_path=$(record_home_path "$task_id")
+    in_flight=$(jq -r 'if .state == "in_flight" then "yes" else "no" end' <<<"$record")
+    held=$(jq -r 'if (.hold_reason // "") != "" or ((.blocked_by_ids // []) | length) > 0 then "yes" else "no" end' <<<"$record")
+    if [ "$in_flight" = yes ]; then
       choices='the task is In flight: cancel it (stop the worker, then Done), mark it done, or was the card deleted by mistake'
-    elif [ "$held" = 1 ]; then
+    elif [ "$held" = yes ]; then
       choices='the task is blocked or held: cancel it (Done), mark it done, or was the card deleted by mistake'
     else
       choices='the task is queued: cancel it (Done), mark it done, or was the card deleted by mistake'
@@ -1084,38 +1047,7 @@ if [ "$PARTIAL" = false ] && [ "$TSV_EXISTED" = true ]; then
     queue_board_event "helm-card-deleted:$task_id" \
       "check: captain deleted Helm card $task_id ($choices)" \
       || printf 'fm-helm-sync: could not enqueue the Helm card deletion for %s\n' "$task_id" >&2
-  done <"$DELETED_PLAN"
-fi
-
-publish_poll_signature() {
-  local signature poll_tmp
-  signature=$(jq -r '
-    def fieldval($n): [.fieldValues.nodes[]? | select(.field.name == $n) | .name][0] // "";
-    [ .data.user.projectV2.items.nodes[]
-      | .id + "" + fieldval("Status") + "" + fieldval("Priority")
-        + "" + ((.content.title // "") | @base64)
-        + "" + ((.content.body // "") | @base64) ]
-    | (length | tostring) + "\n" + (sort | join("\n"))
-  ' "$ACK_BOARD_JSON" | fm_helm_sha256_stdin) || helm_fail_open "could not build Helm board acknowledgement"
-  [ -n "$signature" ] || helm_fail_open "could not build Helm board acknowledgement"
-  poll_tmp=$(mktemp "$TMP_DIR/poll.XXXXXX") || helm_fail_open "could not stage Helm board acknowledgement"
-  printf '%s\n' "$signature" >"$poll_tmp" || helm_fail_open "could not write Helm board acknowledgement"
-  chmod 0600 "$poll_tmp" || helm_fail_open "could not protect Helm board acknowledgement"
-  mv -f -- "$poll_tmp" "$POLL_FILE" || helm_fail_open "could not publish Helm board acknowledgement"
-}
-
-if [ "$PARTIAL" = true ]; then
-  # The cards written so far are acknowledged so the next run does not read
-  # them as captain edits; the caches and debounce hash stay as they were so
-  # that run reconciles the rest.
-  publish_poll_signature
-  if [ "$FORCE" -eq 1 ]; then
-    : >"$RESUME_FORCE_FILE" || helm_fail_open "could not record the pending forced Helm read"
-    chmod 0600 "$RESUME_FORCE_FILE" 2>/dev/null || true
-  fi
-  printf 'fm-helm-sync: partial: %s cards written before the run budget ran out; the next run continues\n' \
-    "$CARDS_WRITTEN"
-  exit 0
+  done <"$OLD_CARDS"
 fi
 
 # Publish the refreshed identity cache atomically.
@@ -1140,7 +1072,18 @@ printf '%s\n' "$BACKLOG_HASH" >"$HASH_TMP" || helm_fail_open "could not write He
 chmod 0600 "$HASH_TMP" || helm_fail_open "could not protect Helm sync state"
 mv -f -- "$HASH_TMP" "$HASH_FILE" || helm_fail_open "could not publish Helm sync state"
 
-publish_poll_signature
-rm -f -- "$RESUME_FORCE_FILE"
+POLL_SIGNATURE=$(jq -r '
+  def fieldval($n): [.fieldValues.nodes[]? | select(.field.name == $n) | .name][0] // "";
+  [ .data.user.projectV2.items.nodes[]
+    | .id + "\u001f" + fieldval("Status") + "\u001f" + fieldval("Priority")
+      + "\u001f" + ((.content.title // "") | @base64)
+      + "\u001f" + ((.content.body // "") | @base64) ]
+  | (length | tostring) + "\n" + (sort | join("\n"))
+' "$ACK_BOARD_JSON" | fm_helm_sha256_stdin) || helm_fail_open "could not build Helm board acknowledgement"
+[ -n "$POLL_SIGNATURE" ] || helm_fail_open "could not build Helm board acknowledgement"
+POLL_TMP=$(mktemp "$TMP_DIR/poll.XXXXXX") || helm_fail_open "could not stage Helm board acknowledgement"
+printf '%s\n' "$POLL_SIGNATURE" >"$POLL_TMP" || helm_fail_open "could not write Helm board acknowledgement"
+chmod 0600 "$POLL_TMP" || helm_fail_open "could not protect Helm board acknowledgement"
+mv -f -- "$POLL_TMP" "$POLL_FILE" || helm_fail_open "could not publish Helm board acknowledgement"
 
 printf 'fm-helm-sync: synchronized\n'

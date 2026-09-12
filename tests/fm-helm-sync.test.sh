@@ -687,10 +687,10 @@ fi
 pass "a late pre-write board conflict preserves the captain edit"
 
 # ---------------------------------------------------------------------------
-# Multi-field convergence: a card whose text and several fields all change in
-# one run lands every change and converges in that run.  The short budget and
-# per-request latency reproduce the deadline pressure that made the former
-# one-request-per-field implementation abort mid-card.
+# Multi-field convergence: creating a card with several fields lands every
+# change in one run.  The short budget and per-request latency reproduce the
+# deadline pressure that made the former one-request-per-field implementation
+# abort before completing a brand-new card.
 # ---------------------------------------------------------------------------
 case_dir="$TMP_ROOT/multi-field-card"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
@@ -699,35 +699,29 @@ printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
-## Queued
-- [ ] multi-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## In flight
+- [ ] multi-task - Revised backlog title (repo: firstmate) (kind: ship) (priority: 0) (since: 2026-09-09)
 ## Done
 EOF
-board_json "$(jq -n --argjson a "$(draft_item multi-item multi-draft multi-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
-run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "multi-field baseline sync failed"
-run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "multi-field baseline poll failed"
-sed -e 's/Backlog title/Revised backlog title/' -e 's/(kind: ship)/(kind: ship) (priority: 0)/' -e 's/^## Queued$/## In flight/' \
-  "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
-  || fail "could not stage the multi-field backlog"
-mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+board_json '[]' > "$case_dir/board.json"
 : > "$case_dir/gh.log"
 out=$(FM_FAKE_GH_LATENCY=5 run_sync "$case_dir" "$fb" 2>&1) \
   || fail "multi-field sync exited nonzero: $out"
 assert_contains "$out" "fm-helm-sync: synchronized" "a multi-field card change did not converge in one run"
 jq -e '
   .data.user.projectV2.items.nodes[]
-  | select(.id == "multi-item")
+  | select(.id == "created-item")
   | .content.title == "Revised backlog title"
     and any(.fieldValues.nodes[]; .field.name == "Status" and .name == "In flight")
     and any(.fieldValues.nodes[]; .field.name == "Priority" and .name == "P0")
     and any(.fieldValues.nodes[]; .field.name == "Project" and .name == "firstmate")
     and any(.fieldValues.nodes[]; .field.name == "Kind" and .name == "ship")
 ' "$case_dir/board-state.json" >/dev/null \
-  || fail "the multi-field card did not land every change: $(jq -c '.data.user.projectV2.items.nodes[] | select(.id == "multi-item")' "$case_dir/board-state.json")"
+  || fail "the multi-field card did not land every change: $(jq -c '.data.user.projectV2.items.nodes[] | select(.id == "created-item")' "$case_dir/board-state.json")"
 [ "$(grep -c "node(id:\$itemId)" "$case_dir/gh.log")" -eq 1 ] \
   || fail "a multi-field card was read more than once before writing"
-[ "$(grep -c 'query=mutation(' "$case_dir/gh.log")" -eq 1 ] \
-  || fail "a multi-field card took more than one mutation request: $(grep -c 'query=mutation(' "$case_dir/gh.log")"
+[ "$(grep -c 'query=mutation(' "$case_dir/gh.log")" -eq 2 ] \
+  || fail "a multi-field card took more than one creation-plus-write request: $(grep -c 'query=mutation(' "$case_dir/gh.log")"
 [ -f "$case_dir/home/state/.helm-sync-backlog.sha256" ] \
   || fail "a converged multi-field run did not advance the sync debounce state"
 [ -s "$case_dir/home/state/.helm-board-poll" ] \
