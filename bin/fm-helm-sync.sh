@@ -952,7 +952,12 @@ while IFS= read -r record; do
   if [ "$push_priority" = true ] && [ "$current_priority_id" != "$desired_priority_option" ]; then
     plan_field "$PRIORITY_FIELD_ID" Priority "$desired_priority" "$desired_priority_option"
   fi
-  write_card "$item_id" || helm_fail_open "could not update Helm card for $task_id"
+  if ! write_card "$item_id"; then
+    if [ "${#PLAN_FIELD_NAMES[@]}" -gt 0 ]; then
+      helm_fail_open "could not update Helm ${PLAN_FIELD_NAMES[0]} for $task_id"
+    fi
+    helm_fail_open "could not update the Helm card content for $task_id"
+  fi
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$task_id" "$item_id" "$content_node_id" "$content_type" "$fingerprint" "$NOW_EPOCH" >>"$NEW_CARDS"
