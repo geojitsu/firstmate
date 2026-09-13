@@ -61,9 +61,10 @@
 # ## Durable progress
 # Every landed card write updates that card's row in state/helm-cards.tsv at
 # once, atomically, so a run cut off by its deadline, a failed request, or the
-# watcher's check timeout has already recorded what it did.  A card created but
-# not yet field-written carries an empty fingerprint, which makes the next run
-# compare it against the board and finish it.  The debounce hash and the
+# watcher's check timeout has already recorded what it did.  Between draft
+# creation and its field write, a card row has its identity and desired text
+# but blank Status and Priority baselines.  After the field write lands, the
+# sync publishes the complete per-field baseline.  The debounce hash and the
 # deletion tombstones are published only by a complete run.
 # The board poll signature (state/.helm-board-poll) is republished at every
 # non-fail-open exit from the board as read plus the "landed patches" recorded
@@ -77,10 +78,13 @@
 #   <priority-option> <title-base64> <body-base64> <last-seen-epoch>
 # Version 1 rows with one opaque fingerprint are migrated by adopting the
 # board-current values as their baseline, so migration cannot fabricate a
-# divergence.  A missing baseline is handled the same way and produces one
-# summary wake listing the rebuilt task ids.  The cache is not truth: every card
-# carries `<task-id>` as body line 1.  A card whose body line 1 is not a
+# divergence.  A missing baseline is rebuilt the same way without a wake.  The
+# cache is not truth: every card carries `<task-id>` as body line 1.  A card
+# whose body line 1 is not a
 # recognised `<id>` is refused and logged, never touched.
+# State files under `.helm-*` retain an acknowledgement fingerprint for each
+# unresolved field divergence.  The sync removes an acknowledgement after that
+# field no longer diverges, so repeated forced reads do not requeue its wake.
 # state/helm-deleted.tsv (mode 0600) retains a captain deletion tombstone while
 # that task remains in any discovered backlog. It suppresses recreation even
 # after the captain resolves the hold by marking the task Done. The tombstone
