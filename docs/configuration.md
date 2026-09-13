@@ -139,8 +139,9 @@ If a fail-open sync skip would leave a backlog item unsynchronized, its diagnost
 
 One run reads the board once, parses every backlog once, and computes the whole reconciliation as one plan before it writes anything, so a fleet-sized backlog plans in well under a second and the run's 25-second budget is spent on card writes.
 Every landed card write is recorded in `state/helm-cards.tsv` immediately, so a run stopped by its budget, a failed request, or the watcher's check timeout keeps what it already did.
-Such a run prints `fm-helm-sync: partial: N cards remain` and exits 0; the watcher stays silent for that line, and the next check resumes from the recorded progress rather than starting over.
-A `--force` run that stops early leaves `state/.helm-sync-resume` so the next run is forced too, which keeps the captain's board edits on the cards it never reached on the reconciliation path instead of the backlog-wins path.
+A run that reaches its budget or cannot land a card request prints `fm-helm-sync: partial: N cards remain` and exits 0; the watcher stays silent for that line, and the next check resumes from the recorded progress rather than starting over.
+An external interruption, including the watcher's check timeout, can end without that line, but the next run still uses the recorded card rows.
+A `--force` run that reaches the partial path leaves `state/.helm-sync-resume` so the next run is forced too, which keeps the captain's board edits on the cards it never reached on the reconciliation path instead of the backlog-wins path.
 
 Field authority: `data/backlog.md` in the owning home is authoritative for a card's title, body, kind, repository, priority, and lifecycle status.
 The board is authoritative only for the captain's own edits, only for Priority, Status, and card text, and only on an explicit `bin/fm-helm-sync.sh --force` read.

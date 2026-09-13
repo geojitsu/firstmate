@@ -52,10 +52,10 @@
 # card writes still planned, or a card's own write failed, the run stops cleanly,
 # keeps everything it already landed (see "Durable progress"), prints one
 # `fm-helm-sync: partial: N cards remain` line, and exits 0; the next run plans
-# again from the recorded state and continues.  A --force run that stops early
-# leaves state/.helm-sync-resume so the next run is forced too and the captain's
-# board edits on the cards it never reached still get their reconciliation wakes
-# instead of a backlog push.  helm_fail_open remains the exit for config, auth,
+# again from the recorded state and continues.  A --force run that reaches this
+# partial path leaves state/.helm-sync-resume so the next run is forced too and
+# the captain's board edits on the cards it never reached still get their
+# reconciliation wakes instead of a backlog push.  helm_fail_open remains the exit for config, auth,
 # parse, and other failures that stop the run before or between card writes.
 #
 # ## Durable progress

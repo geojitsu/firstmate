@@ -18,8 +18,10 @@ The identity cache, the debounce hash, and the poll signature were published onl
 ## Fix
 
 The sync now renders every card and computes the whole reconciliation in one `jq` pass (`fm_helm_desired_program` and `fm_helm_plan_program` in `bin/fm-helm-lib.sh`) and the bash loop only executes plan entries.
-Every landed card write updates its `state/helm-cards.tsv` row at once, a run that stops early prints `partial: N cards remain` and exits 0, and the next run resumes from the recorded progress.
-A stopped `--force` run leaves `state/.helm-sync-resume` so the next run stays forced.
+Every landed card write updates its `state/helm-cards.tsv` row at once.
+A run that reaches its budget or cannot land a card request prints `partial: N cards remain` and exits 0.
+An external interruption can end without that line, but the next run resumes from the recorded card rows.
+A `--force` run that reaches the partial path leaves `state/.helm-sync-resume` so the next run stays forced.
 
 ## Prevention
 
