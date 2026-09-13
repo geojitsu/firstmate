@@ -654,13 +654,30 @@ pass "forward body progress rewrites the board without a wake"
 
 # A genuine board text edit wakes once, then remains quiet until it changes.
 cp "$case_dir/board.json" "$case_dir/converged-board.json"
-board_json "$(jq -n --argjson a "$(draft_item merge-item merge-draft merge-task 'Captain title' 'original body' Done done-status P2 p2-priority)" '[$a]')" > "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "merge-item") | .content.title) = "Captain title"' \
+  "$case_dir/converged-board.json" > "$case_dir/board.json"
 : > "$case_dir/home/state/.wake-queue"
 run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "board text divergence run failed"
 run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "repeated board text divergence run failed"
 [ "$(grep -c $'\tcheck\thelm-card-edit:merge-task\t' "$case_dir/home/state/.wake-queue")" -eq 1 ] \
   || fail "the same board text divergence did not wake exactly once"
 pass "repeated board text divergence raises one remembered wake"
+
+sed 's/Merge task/Captain title/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"; : > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "board-text reconciliation run failed"
+sed 's/2026-09-06/2026-09-07/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "post-reconciliation body run failed"
+grep -F 'applied draftIssueId=merge-draft' "$case_dir/gh.log" >/dev/null \
+  || fail "a reconciled board edit left the text baseline stale"
+pass "reconciled board edits advance the text baseline"
+cp "$case_dir/converged-board.json" "$case_dir/board.json"
+sed -e 's/Captain title/Merge task/' -e 's/2026-09-07/2026-09-06/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "three-way test reset run failed"
 
 # A backlog Priority change wins over a stale board value; it is not written
 # back as though the captain had edited the board.

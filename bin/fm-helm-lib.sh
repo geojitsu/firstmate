@@ -483,10 +483,10 @@ fm_helm_plan_program() {
                (($cs != $so) or ($cp != $pro) or ($ct != $dt) or ($cb != $db))) as $conflict
             | (($ct != $bt) or ($cb != $bb)) as $text_conflict
             | ($r.id + "\t" + $card.id + "\t" + $node + "\t" + (if $is_issue then "issue" else "draft" end) + "\t" +
-                (if $rebuilt then $so else (if $status_normal then $so else $bs end) end) + "\t" +
+                (if $rebuilt or $status_normal or $cs == $so then $so else $bs end) + "\t" +
                 (if $rebuilt then $pro else (if $priority_board_changed then $cp else $pro end) end) + "\t" +
-                (if $rebuilt then $dt else (if $text_board_changed then $bt else $dt end) end) + "\t" +
-                (if $rebuilt then $db else (if $text_board_changed then $bb else $db end) end) + "\t" + $now) as $cache
+                (if $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $dt else $bt end) + "\t" +
+                (if $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $db else $bb end) + "\t" + $now) as $cache
             | if $force == "0" and $old != null and $old.v2 and $old.status == $so and $old.priority == $pro and $old.title == $dt and $old.body == $db then
                 {phase: "record", action: "none", task: $r.id, item: $card.id, cache: $cache, note: $d.note}
               else
