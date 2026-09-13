@@ -854,6 +854,10 @@ mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
 run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "title-body merge run failed"
 jq -e '.data.user.projectV2.items.nodes[] | select(.id == "text-item" and .content.title == "Captain title" and (.content.body | contains("2026-09-10")))' \
   "$case_dir/board-state.json" >/dev/null || fail "a body update overwrote the captain title"
+: > "$case_dir/home/state/.wake-queue"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "title-body merge replay run failed"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a body update retriggered a title edit wake"
 pass "body progress preserves a captain title edit"
 
 case_dir="$TMP_ROOT/waiting-status"

@@ -496,7 +496,8 @@ fm_helm_plan_program() {
                (if $priority_conflict then ["priority", $cp, $pro] else empty end),
                (if $title_conflict then ["title", $ct, $dt] else empty end),
                (if $body_conflict then ["body", $cb, $db] else empty end)] | tojson | @base64) as $conflict_fp
-            | ([$ct, $cb] | tojson | @base64) as $text_fp
+            | ([(if $title_board_changed or $title_conflict then ["title", $ct, $dt] else empty end),
+               (if $body_board_changed or $body_conflict then ["body", $cb, $db] else empty end)] | tojson | @base64) as $text_fp
             | ($r.id + "\t" + $card.id + "\t" + $node + "\t" + (if $is_issue then "issue" else "draft" end) + "\t" +
                 (if $conflict then $bs elif $rebuilt or $status_normal or $cs == $so then $so elif $waiting_status_changed then $cs else $bs end) + "\t" +
                 (if $conflict then $bp elif $rebuilt then $pro else (if $priority_board_changed then $cp else $pro end) end) + "\t" +
