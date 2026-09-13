@@ -492,12 +492,18 @@ fm_helm_plan_program() {
             | ((($title_conflict | not) and ($ct != $dt) and ($title_board_changed | not))) as $title_write
             | ((($body_conflict | not) and ($cb != $db) and ($body_board_changed | not))) as $body_write
             | ($title_write or $body_write) as $text_write
-            | ([(if $status_conflict then ["status", $cs, $so] else empty end),
-               (if $priority_conflict then ["priority", $cp, $pro] else empty end),
-               (if $title_conflict then ["title", $ct, $dt] else empty end),
-               (if $body_conflict then ["body", $cb, $db] else empty end)] | tojson | @base64) as $conflict_fp
-            | ([(if $title_board_changed or $title_conflict then ["title", $ct, $dt] else empty end),
-               (if $body_board_changed or $body_conflict then ["body", $cb, $db] else empty end)] | tojson | @base64) as $text_fp
+            | (["status", $cs, $so] | tojson | @base64) as $status_conflict_fp
+            | (["priority", $cp, $pro] | tojson | @base64) as $priority_conflict_fp
+            | (["title", $ct, $dt] | tojson | @base64) as $title_fp
+            | (["body", $cb, $db] | tojson | @base64) as $body_fp
+            | ($title_board_changed or $title_conflict) as $title_edit
+            | ($body_board_changed or $body_conflict) as $body_edit
+            | ($title_edit and (divergence_matches("card-edit-title"; $r.id; $card.id; $title_fp) | not)) as $title_edit_wake
+            | ($body_edit and (divergence_matches("card-edit-body"; $r.id; $card.id; $body_fp) | not)) as $body_edit_wake
+            | (($status_conflict and (divergence_matches("conflict-status"; $r.id; $card.id; $status_conflict_fp) | not))
+               or ($priority_conflict and (divergence_matches("conflict-priority"; $r.id; $card.id; $priority_conflict_fp) | not))
+               or ($title_conflict and (divergence_matches("conflict-title"; $r.id; $card.id; $title_fp) | not))
+               or ($body_conflict and (divergence_matches("conflict-body"; $r.id; $card.id; $body_fp) | not))) as $conflict_wake
             | ($r.id + "\t" + $card.id + "\t" + $node + "\t" + (if $is_issue then "issue" else "draft" end) + "\t" +
                 (if $conflict then $bs elif $rebuilt or $status_normal or $cs == $so then $so elif $waiting_status_changed then $cs else $bs end) + "\t" +
                 (if $conflict then $bp elif $rebuilt then $pro else (if $priority_board_changed then $cp else $pro end) end) + "\t" +
@@ -510,9 +516,9 @@ fm_helm_plan_program() {
                    elif $text_write and $node == "" then
                      {error: ("Helm card " + $r.id + " has no draft issue id"), wakes: []}
                    elif $text_write then
-                     {draft: $node, wakes: (if ($text_board_changed or $text_conflict) and (divergence_matches("card-edit"; $r.id; $card.id; $text_fp) | not) then [{key:("helm-card-edit:" + $r.id), payload:("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}] else [] end)}
+                     {draft: $node, wakes: (if $title_edit_wake or $body_edit_wake then [{key:("helm-card-edit:" + $r.id), payload:("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}] else [] end)}
                    elif $text_board_changed or $text_conflict then
-                     {draft: "", wakes: (if divergence_matches("card-edit"; $r.id; $card.id; $text_fp) then [] else [{key:("helm-card-edit:" + $r.id), payload:("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}] end)}
+                     {draft: "", wakes: (if $title_edit_wake or $body_edit_wake then [{key:("helm-card-edit:" + $r.id), payload:("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}] else [] end)}
                    else {draft: "", wakes: []} end) as $text
                 | if $text.error != null then {phase: "error", action: $text.error}
                   else
@@ -563,12 +569,18 @@ fm_helm_plan_program() {
                      task: $r.id, item: $card.id, cache: $cache, draft: $text.draft,
                      title: (if $title_write then $d.title else $card_title end), body: (if $body_write then $d.body else $card_body end), fields: $writes,
                      wakes: ($text.wakes + $disp.wakes + $st.wakes
-                       + (if $conflict and (divergence_matches("conflict"; $r.id; $card.id; $conflict_fp) | not) then [{key:("helm-card-edit:" + $r.id), payload:("check: Helm card " + $r.id + " changed on both board and backlog; reconcile the conflict")}] else [] end)),
-                     divergence_ops: ((if ((($text_board_changed or $text_conflict) and ($ct != $dt or $cb != $db))) then [{kind:"card-edit", action:"keep", item:$card.id, fp:$text_fp}] elif (divergence_for("card-edit"; $r.id) != null) then [{kind:"card-edit", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if $conflict_wake then [{key:("helm-card-edit:" + $r.id), payload:("check: Helm card " + $r.id + " changed on both board and backlog; reconcile the conflict")}] else [] end)),
+                     divergence_ops: ((if $title_edit then [{kind:"card-edit-title", action:"keep", item:$card.id, fp:$title_fp}] elif divergence_for("card-edit-title"; $r.id) != null then [{kind:"card-edit-title", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if $body_edit then [{kind:"card-edit-body", action:"keep", item:$card.id, fp:$body_fp}] elif divergence_for("card-edit-body"; $r.id) != null then [{kind:"card-edit-body", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if $status_conflict then [{kind:"conflict-status", action:"keep", item:$card.id, fp:$status_conflict_fp}] elif divergence_for("conflict-status"; $r.id) != null then [{kind:"conflict-status", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if $priority_conflict then [{kind:"conflict-priority", action:"keep", item:$card.id, fp:$priority_conflict_fp}] elif divergence_for("conflict-priority"; $r.id) != null then [{kind:"conflict-priority", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if $title_conflict then [{kind:"conflict-title", action:"keep", item:$card.id, fp:$title_fp}] elif divergence_for("conflict-title"; $r.id) != null then [{kind:"conflict-title", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if $body_conflict then [{kind:"conflict-body", action:"keep", item:$card.id, fp:$body_fp}] elif divergence_for("conflict-body"; $r.id) != null then [{kind:"conflict-body", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if divergence_for("card-edit"; $r.id) != null then [{kind:"card-edit", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if divergence_for("conflict"; $r.id) != null then [{kind:"conflict", action:"remove", item:$card.id, fp:""}] else [] end)
                        + (if ($st.kind // "") == "status-back" then [{kind:"status-back", action:"keep", item:$card.id, fp:$cur_status_id}] elif divergence_for("status-back"; $r.id) != null then [{kind:"status-back", action:"remove", item:$card.id, fp:""}] else [] end)
                        + (if ($st.kind // "") == "status-done" then [{kind:"status-done", action:"keep", item:$card.id, fp:$cur_status_id}] elif divergence_for("status-done"; $r.id) != null then [{kind:"status-done", action:"remove", item:$card.id, fp:""}] else [] end)
                        + (if ($st.kind // "") == "status-waiting" then [{kind:"status-waiting", action:"keep", item:$card.id, fp:$waiting_fp}] elif divergence_for("status-waiting"; $r.id) != null then [{kind:"status-waiting", action:"remove", item:$card.id, fp:""}] else [] end)
-                       + (if $conflict then [{kind:"conflict", action:"keep", item:$card.id, fp:$conflict_fp}] elif divergence_for("conflict"; $r.id) != null then [{kind:"conflict", action:"remove", item:$card.id, fp:""}] else [] end)
                        + (if divergence_for("new-card"; $r.id) != null then [{kind:"new-card", action:"remove", item:$card.id, fp:""}] else [] end)
                        + (if divergence_for("card-deleted"; $r.id) != null then [{kind:"card-deleted", action:"remove", item:$card.id, fp:""}] else [] end)),
                      marker: $disp.marker, marker_fp: $dispatch_fp,

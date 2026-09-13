@@ -860,6 +860,37 @@ run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "title-body merge rep
 [ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a body update retriggered a title edit wake"
 pass "body progress preserves a captain title edit"
 
+case_dir="$TMP_ROOT/partial-text-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] partial-text - Original title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item partial-item partial-draft partial-text 'Original title' 'original body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "partial text baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "partial-item") | .content) |= (.title = "Captain title" | .body = "`partial-text`\ncaptain body")' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+sed -e 's/Original title/Backlog title/' -e 's/2026-09-09/2026-09-10/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "partial text conflict run failed"
+grep -F 'helm-card-edit:partial-text' "$case_dir/home/state/.wake-queue" >/dev/null \
+  || fail "a partial text conflict did not wake"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "partial-item") | .content.title) = "Backlog title"' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "partial text reconciliation run failed"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a remaining text conflict retriggered its wake"
+pass "partial text reconciliation preserves conflict acknowledgement"
+
 case_dir="$TMP_ROOT/waiting-status"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
