@@ -806,6 +806,8 @@ pass "a pre-write board conflict preserves the captain edit"
 : > "$case_dir/home/state/.wake-queue"
 out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "repeated pre-write conflict sync exited nonzero: $out"
 [ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a remembered board/backlog conflict woke again"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "persisted pre-write conflict sync exited nonzero: $out"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a persisted conflict fabricated a status reversal"
 pass "a board/backlog conflict wakes once"
 
 case_dir="$TMP_ROOT/waiting-status"
