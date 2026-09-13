@@ -465,6 +465,8 @@ fm_helm_plan_program() {
             | ($card.content.id // "") as $node
             | ($d.title | @base64) as $dt
             | ($d.body | @base64) as $db
+            | ($card.content.title // "") as $card_title
+            | ($card.content.body // "") as $card_body
             | ($card.content.title // "" | @base64) as $ct
             | ($card.content.body // "" | @base64) as $cb
             | ($card | fieldopt("Status")) as $cs
@@ -478,11 +480,18 @@ fm_helm_plan_program() {
             | ($cs != $bs) as $status_board_changed
             | ($cs == $waiting_id and $status_board_changed) as $waiting_status_changed
             | (($cp != $bp) and ($pro == $bp)) as $priority_board_changed
-            | ((($ct != $bt) or ($cb != $bb)) and ($dt == $bt) and ($db == $bb)) as $text_board_changed
+            | (($ct != $bt) and ($dt == $bt)) as $title_board_changed
+            | (($cb != $bb) and ($db == $bb)) as $body_board_changed
+            | ($title_board_changed or $body_board_changed) as $text_board_changed
             | (($cs != $bs) and ($so != $bs) and ($cs != $so)) as $status_conflict
             | (($cp != $bp) and ($pro != $bp) and ($cp != $pro)) as $priority_conflict
-            | ((($ct != $bt) or ($cb != $bb)) and (($dt != $bt) or ($db != $bb)) and (($ct != $dt) or ($cb != $db))) as $text_conflict
+            | (($ct != $bt) and ($dt != $bt) and ($ct != $dt)) as $title_conflict
+            | (($cb != $bb) and ($db != $bb) and ($cb != $db)) as $body_conflict
+            | ($title_conflict or $body_conflict) as $text_conflict
             | ($status_conflict or $priority_conflict or $text_conflict) as $conflict
+            | ((($title_conflict | not) and ($ct != $dt) and ($title_board_changed | not))) as $title_write
+            | ((($body_conflict | not) and ($cb != $db) and ($body_board_changed | not))) as $body_write
+            | ($title_write or $body_write) as $text_write
             | ([$cs, $cp, $ct, $cb] | tojson | @base64) as $conflict_fp
             | ([$ct, $cb] | tojson | @base64) as $text_fp
             | ($r.id + "\t" + $card.id + "\t" + $node + "\t" + (if $is_issue then "issue" else "draft" end) + "\t" +
@@ -493,10 +502,13 @@ fm_helm_plan_program() {
             | if $force == "0" and $old != null and $old.v2 and $old.status == $so and $old.priority == $pro and $old.title == $dt and $old.body == $db then
                 {phase: "record", action: "none", task: $r.id, item: $card.id, cache: $cache, note: $d.note}
               else
-                (if $is_issue or $text_board_changed or $text_conflict then
-                       {draft: "", wakes: (if $is_issue or divergence_matches("card-edit"; $r.id; $card.id; $text_fp) then [] else [{key:("helm-card-edit:" + $r.id), payload:("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}] end)}
-                   elif ($ct != $dt or $cb != $db) then
-                     (if $node == "" then {error: ("Helm card " + $r.id + " has no draft issue id")} else {draft: $node, wakes: []} end)
+                (if $is_issue then {draft: "", wakes: []}
+                   elif $text_write and $node == "" then
+                     {error: ("Helm card " + $r.id + " has no draft issue id"), wakes: []}
+                   elif $text_write then
+                     {draft: $node, wakes: (if ($text_board_changed or $text_conflict) and (divergence_matches("card-edit"; $r.id; $card.id; $text_fp) | not) then [{key:("helm-card-edit:" + $r.id), payload:("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}] else [] end)}
+                   elif $text_board_changed or $text_conflict then
+                     {draft: "", wakes: (if divergence_matches("card-edit"; $r.id; $card.id; $text_fp) then [] else [{key:("helm-card-edit:" + $r.id), payload:("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}] end)}
                    else {draft: "", wakes: []} end) as $text
                 | if $text.error != null then {phase: "error", action: $text.error}
                   else
@@ -540,12 +552,12 @@ fm_helm_plan_program() {
                   | ($r.id + "\t" + $card.id + "\t" + $node + "\t" + (if $is_issue then "issue" else "draft" end) + "\t" +
                      (if any($writes[]; .name == "Status") then $so elif $status_conflict then $bs elif $waiting_status_changed then $cs elif $rebuilt or $status_normal or $cs == $so then $so else $bs end) + "\t" +
                      (if any($writes[]; .name == "Priority") then $pro elif $priority_conflict then $bp elif $rebuilt then $pro else (if $priority_board_changed then $cp else $pro end) end) + "\t" +
-                     (if $text.draft != "" then $dt elif $text_conflict then $bt elif $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $dt else $bt end) + "\t" +
-                     (if $text.draft != "" then $db elif $text_conflict then $bb elif $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $db else $bb end) + "\t" + $now) as $cache
+                     (if $title_write then $dt elif $title_conflict then $bt elif $rebuilt or $ct == $dt or ($title_board_changed | not) then $dt else $bt end) + "\t" +
+                     (if $body_write then $db elif $body_conflict then $bb elif $rebuilt or $cb == $db or ($body_board_changed | not) then $db else $bb end) + "\t" + $now) as $cache
                   | {phase: "record",
                      action: (if $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
                      task: $r.id, item: $card.id, cache: $cache, draft: $text.draft,
-                     title: $d.title, body: $d.body, fields: $writes,
+                     title: (if $title_write then $d.title else $card_title end), body: (if $body_write then $d.body else $card_body end), fields: $writes,
                      wakes: ($text.wakes + $disp.wakes + $st.wakes
                        + (if $conflict and (divergence_matches("conflict"; $r.id; $card.id; $conflict_fp) | not) then [{key:("helm-card-edit:" + $r.id), payload:("check: Helm card " + $r.id + " changed on both board and backlog; reconcile the conflict")}] else [] end)),
                      divergence_ops: ((if ((($text_board_changed or $text_conflict) and ($ct != $dt or $cb != $db))) then [{kind:"card-edit", action:"keep", item:$card.id, fp:$text_fp}] elif (divergence_for("card-edit"; $r.id) != null) then [{kind:"card-edit", action:"remove", item:$card.id, fp:""}] else [] end)
@@ -559,7 +571,7 @@ fm_helm_plan_program() {
                      writeback: (if $writeback then $prio_from_board else "" end),
                      home: $r.home_path, note: $d.note, fp: $fp,
                      expected: ($card | snapshot),
-                     ack_write: ({new: false, text: ($text.draft != ""), title: $d.title, body: $d.body,
+                     ack_write: ({new: false, text: ($text.draft != ""), title: (if $title_write then $d.title else $card_title end), body: (if $body_write then $d.body else $card_body end),
                                   fields: ($writes | map({name, value, option}))} | tojson)}
                   end
               end
