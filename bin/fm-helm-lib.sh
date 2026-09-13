@@ -6,7 +6,44 @@
 #   - local fleet home discovery from data/secondmates.md,
 #   - the one data/backlog.md parser, run once per discovered home,
 #   - the combined debounce hash over every discovered home's backlog,
+#   - the one board signature the poll and the sync both fold,
+#   - the card renderer and the one-pass reconciliation planner the sync
+#     executes (see "Plan format" below),
 #   - small sha256 helpers.
+#
+# ## Plan format
+# fm_helm_plan_program turns the rendered backlog union, the board, and the
+# sync's private state files into one NUL-separated stream that the aggregator
+# reads with plain `read -d ''`: no per-record jq call, no per-record awk.
+# Every entry is exactly FM_HELM_PLAN_FIELDS (21) NUL-terminated fields, in
+# order:
+#   1 phase        error | record | missing | deleted
+#   2 action       error: the fail-open message
+#                  record: none | create | update | skip
+#                  missing: close | wake | ignore
+#                  deleted: retain | hold
+#   3 task id
+#   4 item id      board item node id ("" for a card not created yet)
+#   5 cache line   the identity-cache row to keep ("" when the executor
+#                  composes it after a creation)
+#   6 draft id     non-empty => the update also rewrites title and body
+#   7 title        desired card title
+#   8 body         desired card body
+#   9 field writes US-separated items of `fieldId RS name RS value RS optionId`
+#  10 wakes        US-separated items of `key RS payload`
+#  11 marker       "" | remove | request   (dispatch marker operation)
+#  12 marker fp    the dispatch marker fingerprint for `request`
+#  13 writeback    "" | 0-4: board Priority to write into the owning backlog
+#  14 home path    the owning home (writeback and hold)
+#  15 tombstone    "" | `task TAB item` deletion-tombstone row to retain
+#  16 hold reason  the captain hold reason for a deleted live card
+#  17 expected     compact JSON pre-write snapshot for the conflict guard
+#  18 ack create   compact JSON board patch recorded once a creation lands
+#  19 ack write    compact JSON board patch recorded once the write lands
+#  20 fingerprint  the desired-state fingerprint (cache column 5)
+#  21 note         one stderr diagnostic line, or ""
+# US is byte 0x1f and RS is byte 0x1e; no planned value contains either.
+# Error entries always come first so the executor fails open before any write.
 #
 # ## Remote homes
 # Discovery here is local-only. It resolves each secondmate's on-disk home from
@@ -21,6 +58,9 @@
 set -u
 
 FM_HELM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fields per plan entry; see "Plan format" above.
+# shellcheck disable=SC2034 # consumed by bin/fm-helm-sync.sh's plan reader.
+FM_HELM_PLAN_FIELDS=21
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$FM_HELM_LIB_DIR/fm-secondmate-registry-lib.sh"
 
@@ -174,4 +214,356 @@ fm_helm_parse_home_backlog() {
     "$out" >/dev/null 2>&1 || return 1
   jq -e 'map(.id) | group_by(.) | all(length == 1)' "$out" >/dev/null 2>&1 || return 1
   return 0
+}
+
+# fm_helm_sha256_files <dir> <prefix>
+# Hash every "<prefix>*" file under <dir> in one process and print one
+# "<name-without-prefix>\t<hex digest>" line per file. Prints nothing for an
+# empty set; returns 1 when no SHA-256 utility is available.
+fm_helm_sha256_files() {
+  local dir=$1 prefix=$2
+  (
+    cd "$dir" || exit 1
+    set -- "$prefix"*
+    [ -e "$1" ] || exit 0
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum -- "$@"
+    elif command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 -- "$@"
+    else
+      exit 1
+    fi
+  ) | awk -v p="$prefix" '{ name = $2; sub("^" p, "", name); print name "\t" $1 }'
+}
+
+# fm_helm_board_signature_program - print the jq -r program that folds a board
+# read into the one signature state/.helm-board-poll stores: the card count
+# plus, per card, its id, Status, Priority, title, and body. The poll and the
+# sync both use this exact program so a sync's own writes never read back as a
+# captain edit.
+fm_helm_board_signature_program() {
+  cat <<'JQ'
+  ([31] | implode) as $us
+  | def fieldval($n): [.fieldValues.nodes[]? | select(.field.name == $n) | .name][0] // "";
+  [ .data.user.projectV2.items.nodes[]
+    | .id + $us + fieldval("Status") + $us + fieldval("Priority")
+      + $us + ((.content.title // "") | @base64)
+      + $us + ((.content.body // "") | @base64) ]
+  | (length | tostring) + "\n" + (sort | join("\n"))
+JQ
+}
+
+# fm_helm_landed_patch_program - print the jq program that applies the sync's
+# landed board patches ($landed: "<item>\t<json>" lines, see fm-helm-sync.sh
+# "Durable progress") to a board read, producing the board as the sync now
+# believes it looks. Pipe into fm_helm_board_signature_program.
+fm_helm_landed_patch_program() {
+  cat <<'JQ'
+  ($landed | split("\n") | map(select(. != "") | split("\t") | {item: .[0], patch: (.[1] | fromjson)})) as $patches
+  | reduce $patches[] as $p (.;
+      if $p.patch.new then
+        .data.user.projectV2.items.nodes += [{id: $p.item, content: {title: $p.patch.title, body: $p.patch.body}, fieldValues: {nodes: []}}]
+      else
+        .data.user.projectV2.items.nodes |= map(
+          if .id == $p.item then
+            (if $p.patch.text then .content.title = $p.patch.title | .content.body = $p.patch.body else . end)
+            | reduce $p.patch.fields[] as $f (.;
+                .fieldValues.nodes |=
+                  if any(.[]?; .field.name == $f.name) then
+                    map(if .field.name == $f.name then .name = $f.value | .optionId = $f.option else . end)
+                  else . + [{field: {name: $f.name}, name: $f.value, optionId: $f.option}] end)
+          else . end)
+      end)
+JQ
+}
+
+# fm_helm_desired_program - print the jq program that renders every record of
+# the fleet backlog union into its desired card: title, body, Status, Kind,
+# Project, and Priority option names, plus the owning home path and any
+# stderr note. Input: the union array. $report_ids: the task ids that have a
+# data/<id>/report.md in the main home. Output: the same array with .desired
+# and .home_path added to each record.
+fm_helm_desired_program() {
+  cat <<'JQ'
+  def priority_name:
+    if . == "0" then "P0" elif . == "1" then "P1" elif . == "2" then "P2"
+    elif . == "3" then "P3" elif . == "4" then "P4" else "P3" end;
+  def kind_of:
+    if .hold_kind == "captain" and ((.hold_reason // "") != "") then "decision"
+    elif ((.kind // "ship") == "task") or ((.kind // "ship") == "scout") then "investigation"
+    else "ship" end;
+  def status_of($kind):
+    if .state == "done" then "Done"
+    elif $kind == "decision" then "Waiting on you"
+    elif .state == "in_flight" then "In flight"
+    else "Queued" end;
+  def project_of:
+    (.repo // "") as $r
+    | if $r == "firetabs" or $r == "geojitsu/firetabs" then "firetabs"
+      elif $r == "BetterBlueToo" or $r == "geojitsu/BetterBlueToo" then "BetterBlueToo"
+      elif $r == "firstmate" or $r == "geojitsu/firstmate" then "firstmate"
+      elif $r == "nocout" or $r == "dc-noc/nocout" then "nocout"
+      elif $r == "cryptoseacurrents" or $r == "copium/cryptoseacurrents" then "cryptoseacurrents"
+      elif $r == "other" then "other"
+      else null end;
+  def type_line($kind):
+    if $kind == "ship" then "ship - produces a change and a PR"
+    elif $kind == "investigation" then "investigation - produces knowledge, not code"
+    else "decision - needs your call before anything moves" end;
+  def body_of($kind; $priority; $report):
+    ((.repo // "-") | if . == "" then "-" else . end) as $repo
+    | (.since // .reported // .done // .merged // "unknown") as $filed
+    | (.hold_reason // "") as $hold
+    | ((.blocked_by_ids // []) | join(", ")) as $blocked
+    | (.pr_url // "") as $pr
+    | "`" + .id + "`\n\n"
+      + (if $kind == "decision" and $hold != "" then "## What you need to decide\n\n" + $hold + "\n\n" else "" end)
+      + "## Facts\n\n"
+      + "- **Repo:** " + $repo + "\n"
+      + "- **Type:** " + type_line($kind) + "\n"
+      + "- **Priority:** " + $priority + "\n"
+      + "- **Filed:** " + $filed + "\n"
+      + (if $blocked == "" then "" else "- **Blocked by:** " + $blocked + "\n" end)
+      + (if $report == "" then "" else "- **Report:** `" + $report + "`\n" end)
+      + (if $pr == "" then "" else "- **PR:** " + $pr + "\n" end)
+      + "\n## Notes\n\n"
+      + ((.body_lines // []) | map(. + "\n") | join(""))
+      + "\n---\n_Source of truth: `data/backlog.md` in the owning firstmate home._";
+  map(
+    kind_of as $kind
+    | ((.priority // "3") | priority_name) as $priority
+    | project_of as $project
+    | .id as $id
+    | (if (.report_path // "") != "" then .report_path
+       elif any($report_ids[]; . == $id) then "data/" + $id + "/report.md"
+       else "" end) as $report
+    | . + {
+        home_path: ((.home_backlog // "") | sub("/data/backlog\\.md$"; "")),
+        desired: {
+          title: .title,
+          body: body_of($kind; $priority; $report),
+          status: status_of($kind),
+          kind: $kind,
+          project: ($project // "other"),
+          priority_n: (.priority // "3"),
+          priority: $priority,
+          note: (if $project == null
+                 then "fm-helm-sync: unsupported repository " + (.repo // "") + " for " + $id + "; using other"
+                 else "" end)
+        }
+      })
+JQ
+}
+
+# fm_helm_plan_program - print the jq -j program that computes the whole
+# reconciliation plan in one pass. See "Plan format" in this file's header
+# for the entry layout the executor reads.
+# Input: the combined board read. Named inputs:
+#   $desired[0]       fm_helm_desired_program output (--slurpfile)
+#   $cards            prior state/helm-cards.tsv text (--rawfile)
+#   $deleted          prior state/helm-deleted.tsv text (--rawfile)
+#   $markers          state/.helm-dispatch-requests text (--rawfile)
+#   $fps              "<task>\t<fingerprint>" lines (--rawfile)
+#   $force            "1" on --force, else "0"
+#   $dispatch_status  the configured dispatch Status option name
+#   $now              the epoch second recorded in every cache row
+#   $tsv_existed      "true" when the identity cache existed before this run
+fm_helm_plan_program() {
+  cat <<'JQ'
+  ([0] | implode) as $nul
+  | ([31] | implode) as $us
+  | ([30] | implode) as $rs
+  | . as $board
+  | $desired[0] as $records
+  | $board.data.user.projectV2.fields.nodes as $fields
+  | def fid($f): [$fields[] | select(.name == $f and .__typename == "ProjectV2SingleSelectField") | .id][0] // "";
+  def opt($f; $n): [$fields[] | select(.name == $f and .__typename == "ProjectV2SingleSelectField") | .options[]? | select(.name == $n) | .id][0] // "";
+  def line1: (.content.body // "") | split("\n")[0];
+  def fieldval($n): [.fieldValues.nodes[]? | select(.field.name == $n) | .name][0] // "";
+  def fieldopt($n): [.fieldValues.nodes[]? | select(.field.name == $n) | .optionId][0] // "";
+  def snapshot:
+    {title: (.content.title // ""), body: (.content.body // ""),
+     fields: ([.fieldValues.nodes[]?
+       | {field: (.field.name // ""), name: (.name // ""), optionId: (.optionId // "")}
+       | select(.field != "")] | sort_by(.field, .optionId, .name))}
+    | tojson;
+  def rows($text): $text | split("\n") | map(select(. != "") | split("\t"));
+  def first_by($key): reduce .[] as $x ({}; if .[$x[$key]] == null then .[$x[$key]] = $x else . end);
+  def priority_digit:
+    if . == "P0" then "0" elif . == "P1" then "1" elif . == "P2" then "2"
+    elif . == "P3" then "3" elif . == "P4" then "4" else "" end;
+  def entry($o):
+    [ $o.phase, $o.action, ($o.task // ""), ($o.item // ""), ($o.cache // ""), ($o.draft // ""),
+      ($o.title // ""), ($o.body // ""),
+      (($o.fields // []) | map(.id + $rs + .name + $rs + .value + $rs + .option) | join($us)),
+      (($o.wakes // []) | map(.key + $rs + .payload) | join($us)),
+      ($o.marker // ""), ($o.marker_fp // ""), ($o.writeback // ""), ($o.home // ""),
+      ($o.tombstone // ""), ($o.hold // ""), ($o.expected // ""),
+      ($o.ack_create // ""), ($o.ack_write // ""), ($o.fp // ""), ($o.note // "") ]
+    | join($nul) + $nul;
+  $board.data.user.projectV2.items.nodes as $items
+  | (reduce $items[] as $i ({}; .[$i.id] = true)) as $item_set
+  | (reduce $items[] as $i ({}; .[($i | line1)] = true)) as $line1_set
+  | ($items | map(select(.content.__typename == "DraftIssue" or .content.__typename == "Issue"))) as $cards_all
+  | (reduce $cards_all[] as $c ({}; .[($c | line1)] += [$c])) as $by_line1
+  | (rows($cards) | map({task: (.[0] // ""), item: (.[1] // ""), node: (.[2] // ""), type: (.[3] // ""), fp: (.[4] // "")})) as $old_rows
+  | ($old_rows | first_by("task")) as $old_by_task
+  | (rows($deleted) | map({task: (.[0] // ""), line: join("\t")}) | first_by("task")) as $deleted_by_task
+  | (rows($markers) | map({task: (.[0] // ""), item: (.[1] // ""), option: (.[2] // ""), fp: (.[3] // "")})) as $marker_rows
+  | (rows($fps) | map({task: (.[0] // ""), fp: (.[1] // "")}) | first_by("task")) as $fp_by_task
+  | def has_marker($t): any($marker_rows[]; .task == $t);
+  def marker_matches($t; $f): any($marker_rows[]; .task == $t and .fp == $f);
+  (reduce $records[] as $r ({}; .[$r.id] = $r)) as $record_by_id
+  | fid("Status") as $status_field
+  | fid("Project") as $project_field
+  | fid("Kind") as $kind_field
+  | fid("Priority") as $priority_field
+  | opt("Status"; "Done") as $done_id
+  | opt("Status"; $dispatch_status) as $dispatch_option
+  | def record_entries:
+      [ $records[] as $r
+        | $r.desired as $d
+        | ($by_line1["`" + $r.id + "`"] // []) as $matches
+        | ($fp_by_task[$r.id].fp // "") as $fp
+        | $old_by_task[$r.id] as $old
+        | opt("Project"; $d.project) as $po
+        | opt("Kind"; $d.kind) as $ko
+        | opt("Priority"; $d.priority) as $pro
+        | opt("Status"; $d.status) as $so
+        | if $po == "" or $ko == "" or $pro == "" then
+            {phase: "error", action: ("required Helm option is unavailable for " + $r.id)}
+          elif ($matches | length) > 1 then
+            {phase: "error", action: ("duplicate Helm cards for " + $r.id)}
+          elif ($matches | length) == 0 then
+            if $deleted_by_task[$r.id] != null then
+              {phase: "record", action: "skip", task: $r.id, tombstone: $deleted_by_task[$r.id].line, note: $d.note}
+            elif $old != null and $r.state != "done" and $old.item != "" and ($item_set[$old.item] | not) then
+              {phase: "record", action: "skip", task: $r.id, note: $d.note}
+            else
+              [ {id: $status_field, name: "Status", value: $d.status, option: $so},
+                {id: $project_field, name: "Project", value: $d.project, option: $po},
+                {id: $kind_field, name: "Kind", value: $d.kind, option: $ko},
+                {id: $priority_field, name: "Priority", value: $d.priority, option: $pro} ] as $writes
+              | {phase: "record", action: "create", task: $r.id, title: $d.title, body: $d.body,
+                 fields: $writes, marker: (if has_marker($r.id) then "remove" else "" end),
+                 home: $r.home_path, note: $d.note, fp: $fp,
+                 expected: ({title: $d.title, body: $d.body, fields: []} | tojson),
+                 ack_create: ({new: true, title: $d.title, body: $d.body} | tojson),
+                 ack_write: ({new: false, text: false, fields: ($writes | map({name, value, option}))} | tojson)}
+            end
+          else
+            $matches[0] as $card
+            | ($card.content.__typename == "Issue") as $is_issue
+            | ($card.content.id // "") as $node
+            | ($r.id + "\t" + $card.id + "\t" + $node + "\t" + (if $is_issue then "issue" else "draft" end) + "\t" + $fp + "\t" + $now) as $cache
+            | if $force == "0" and $old != null and $old.fp == $fp then
+                {phase: "record", action: "none", task: $r.id, item: $card.id, cache: $cache, note: $d.note}
+              else
+                ((($card.content.title // "") != $d.title) or (($card.content.body // "") != $d.body)) as $text_diff
+                | (if $is_issue then {draft: "", wakes: []}
+                   elif $force == "1" and $text_diff then
+                     {draft: "", wakes: [{key: ("helm-card-edit:" + $r.id),
+                                         payload: ("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}]}
+                   elif $text_diff then
+                     (if $node == "" then {error: ("Helm card " + $r.id + " has no draft issue id")}
+                      else {draft: $node, wakes: []} end)
+                   else {draft: "", wakes: []} end) as $text
+                | if $text.error != null then {phase: "error", action: $text.error}
+                  else
+                  ($card | fieldval("Status")) as $cur_status
+                  | ($card | fieldopt("Status")) as $cur_status_id
+                  | ($card | fieldval("Priority") | priority_digit) as $prio_from_board
+                  | ($force == "1" and $prio_from_board != "" and $prio_from_board != $d.priority_n) as $writeback
+                  | ($cur_status_id == $dispatch_option and $d.status != $dispatch_status and $d.status != "Done") as $dispatch
+                  | ($card.id + ":" + $dispatch_option) as $dispatch_fp
+                  | (if $dispatch then
+                       (if marker_matches($r.id; $dispatch_fp) then {marker: "", wakes: []}
+                        else {marker: "request",
+                              wakes: [{key: ("helm-dispatch:" + $r.id),
+                                       payload: ("check: Helm dispatch request for " + $r.id + " (board item " + $card.id + ")")}]}
+                        end)
+                     else {marker: (if has_marker($r.id) then "remove" else "" end), wakes: []} end) as $disp
+                  | (if ($dispatch | not) and $force == "1" and $cur_status != $d.status then
+                       (if $cur_status == "Done" and $d.status != "Done" then
+                          {deferred: true, wakes: [{key: ("helm-status-done:" + $r.id),
+                                                    payload: ("check: captain moved Helm card " + $r.id + " to Done while the task is live; confirm and reconcile")}]}
+                        elif ($cur_status == "Queued" and ($d.status == "In flight" or $d.status == "Done"))
+                             or ($cur_status == "In flight" and $d.status == "Done") then
+                          {deferred: true, wakes: [{key: ("helm-status-back:" + $r.id),
+                                                    payload: ("check: captain moved Helm card " + $r.id + " back to " + $cur_status + "; reconcile it into the backlog")}]}
+                        else {deferred: false, wakes: []} end)
+                     else {deferred: false, wakes: []} end) as $st
+                  | ( (if ($dispatch | not) and ($st.deferred | not) and $cur_status != $d.status
+                       then [{id: $status_field, name: "Status", value: $d.status, option: $so}] else [] end)
+                    + (if ($card | fieldopt("Project")) != $po
+                       then [{id: $project_field, name: "Project", value: $d.project, option: $po}] else [] end)
+                    + (if ($card | fieldopt("Kind")) != $ko
+                       then [{id: $kind_field, name: "Kind", value: $d.kind, option: $ko}] else [] end)
+                    + (if ($writeback | not) and ($card | fieldopt("Priority")) != $pro
+                       then [{id: $priority_field, name: "Priority", value: $d.priority, option: $pro}] else [] end) ) as $writes
+                  | {phase: "record",
+                     action: (if $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
+                     task: $r.id, item: $card.id, cache: $cache, draft: $text.draft,
+                     title: $d.title, body: $d.body, fields: $writes,
+                     wakes: ($text.wakes + $disp.wakes + $st.wakes),
+                     marker: $disp.marker, marker_fp: $dispatch_fp,
+                     writeback: (if $writeback then $prio_from_board else "" end),
+                     home: $r.home_path, note: $d.note, fp: $fp,
+                     expected: ($card | snapshot),
+                     ack_write: ({new: false, text: ($text.draft != ""), title: $d.title, body: $d.body,
+                                  fields: ($writes | map({name, value, option}))} | tojson)}
+                  end
+              end
+          end ];
+    def missing_entries:
+      if ($records | length) == 0 then [] else
+      [ $cards_all[] as $c
+        | ($c | line1) as $l1
+        | (if ($l1 | test("^`.+`$")) then $l1[1:-1] else "" end) as $tid
+        | if $tid == "" or ($tid | test("^[A-Za-z0-9._-]+$") | not) then
+            {phase: "missing", action: "ignore", item: $c.id,
+             note: ("fm-helm-sync: ignoring board item " + $c.id + ": body line 1 is not a task id")}
+          elif $record_by_id[$tid] != null then empty
+          elif ($c | fieldopt("Status")) == $done_id then empty
+          elif $tsv_existed == "true" and $old_by_task[$tid] == null then
+            {phase: "missing", action: "wake", task: $tid, item: $c.id,
+             wakes: [{key: ("helm-new-card:" + $tid),
+                      payload: ("check: captain added Helm card " + $tid + " with no backlog task; run intake")}]}
+          else
+            {phase: "missing", action: "close", task: $tid, item: $c.id,
+             fields: [{id: $status_field, name: "Status", value: "Done", option: $done_id}],
+             marker: (if has_marker($tid) then "remove" else "" end),
+             expected: ($c | snapshot),
+             ack_write: ({new: false, text: false, fields: [{name: "Status", value: "Done", option: $done_id}]} | tojson)}
+          end ]
+      end;
+    def deleted_entries:
+      if $tsv_existed != "true" then [] else
+      [ $old_rows[] as $o
+        | if $o.task == "" or $o.item == "" then empty
+          elif $item_set[$o.item] then empty
+          elif $line1_set["`" + $o.task + "`"] then empty
+          else
+            $record_by_id[$o.task] as $rec
+            | if $rec == null then empty
+              elif $rec.state == "done" or ($rec.hold_kind // "") == "captain" then
+                {phase: "deleted", action: "retain", task: $o.task, tombstone: ($o.task + "\t" + $o.item)}
+              else
+                (if $rec.state == "in_flight" then
+                   "the task is In flight: cancel it (stop the worker, then Done), mark it done, or was the card deleted by mistake"
+                 elif ($rec.hold_reason // "") != "" or (($rec.blocked_by_ids // []) | length) > 0 then
+                   "the task is blocked or held: cancel it (Done), mark it done, or was the card deleted by mistake"
+                 else
+                   "the task is queued: cancel it (Done), mark it done, or was the card deleted by mistake" end) as $choices
+                | {phase: "deleted", action: "hold", task: $o.task, item: $o.item, home: $rec.home_path,
+                   hold: ("Helm card deleted; " + $choices + "."), tombstone: ($o.task + "\t" + $o.item),
+                   wakes: [{key: ("helm-card-deleted:" + $o.task),
+                            payload: ("check: captain deleted Helm card " + $o.task + " (" + $choices + ")")}]}
+              end
+          end ]
+      end;
+    (record_entries + missing_entries + deleted_entries) as $all
+    | ([$all[] | select(.phase == "error")] + [$all[] | select(.phase != "error")])[]
+    | entry(.)
+JQ
 }

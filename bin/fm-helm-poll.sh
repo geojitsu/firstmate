@@ -21,7 +21,8 @@
 # Retire with bin/fm-check-unregister.sh helm-board.
 #
 # Snapshot: state/.helm-board-poll (mode 0600) holds the last board signature.
-# The signature folds, per card, the (Status, Priority, title, body) it shows,
+# The signature (fm_helm_board_signature_program in bin/fm-helm-lib.sh, shared
+# with the sync) folds, per card, the (Status, Priority, title, body) it shows,
 # plus the card count. Any captain edit to those changes it.
 #
 # When a board and backlog change coincide, the poll emits a reconciliation wake.
@@ -164,14 +165,7 @@ while :; do
   [ -n "$CURSOR" ] || exit 0
 done
 
-SIGNATURE=$(jq -r '
-  def fieldval($n): [.fieldValues.nodes[]? | select(.field.name == $n) | .name][0] // "";
-  [ .data.user.projectV2.items.nodes[]
-    | .id + "" + fieldval("Status") + "" + fieldval("Priority")
-      + "" + ((.content.title // "") | @base64)
-      + "" + ((.content.body // "") | @base64) ]
-  | (length | tostring) + "\n" + (sort | join("\n"))
-' "$BOARD_JSON" | fm_helm_sha256_stdin) || exit 0
+SIGNATURE=$(jq -r "$(fm_helm_board_signature_program)" "$BOARD_JSON" | fm_helm_sha256_stdin) || exit 0
 [ -n "$SIGNATURE" ] || exit 0
 
 store_signature() {
