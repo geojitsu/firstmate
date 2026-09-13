@@ -61,9 +61,10 @@
 # ## Durable progress
 # Every landed card write updates that card's row in state/helm-cards.tsv at
 # once, atomically, so a run cut off by its deadline, a failed request, or the
-# watcher's check timeout has already recorded what it did.  A card created but
-# not yet field-written carries an empty fingerprint, which makes the next run
-# compare it against the board and finish it.  The debounce hash and the
+# watcher's check timeout has already recorded what it did.  Between draft
+# creation and its field write, a card row has its identity and desired text
+# but blank Status and Priority baselines.  After the field write lands, the
+# sync publishes the complete per-field baseline.  The debounce hash and the
 # deletion tombstones are published only by a complete run.
 # The board poll signature (state/.helm-board-poll) is republished at every
 # non-fail-open exit from the board as read plus the "landed patches" recorded
@@ -73,11 +74,17 @@
 #
 # ## Identity cache
 # state/helm-cards.tsv (mode 0600) maps every synced card:
-#   <task-id> <item-id> <content-node-id> <draft|issue> <field-fingerprint> <last-seen-epoch>
-# It is a cache, not truth: when it is absent it is rebuilt from the board on
-# the next run, because every card carries `<task-id>` as body line 1.  It is
-# used for delete detection and to skip unchanged cards.  A card whose body line
-# 1 is not a recognised `<id>` is refused and logged, never touched.
+#   <task-id> <item-id> <content-node-id> <draft|issue> <status-option>
+#   <priority-option> <title-base64> <body-base64> <last-seen-epoch>
+# Version 1 rows with one opaque fingerprint are migrated by adopting the
+# board-current values as their baseline, so migration cannot fabricate a
+# divergence.  A missing baseline is rebuilt the same way without a wake.  The
+# cache is not truth: every card carries `<task-id>` as body line 1.  A card
+# whose body line 1 is not a
+# recognised `<id>` is refused and logged, never touched.
+# State files under `.helm-*` retain an acknowledgement fingerprint for each
+# unresolved field divergence.  The sync removes an acknowledgement after that
+# field no longer diverges, so repeated forced reads do not requeue its wake.
 # state/helm-deleted.tsv (mode 0600) retains a captain deletion tombstone while
 # that task remains in any discovered backlog. It suppresses recreation even
 # after the captain resolves the hold by marking the task Done. The tombstone
@@ -104,6 +111,21 @@ SECONDMATES_PATH="$DATA_PATH/secondmates.md"
 CONFIG_FILE="$CONFIG_PATH/helm.json"
 HASH_FILE="$STATE_PATH/.helm-sync-backlog.sha256"
 DISPATCH_FILE="$STATE_PATH/.helm-dispatch-requests"
+DIVERGENCE_FILES=(
+  "$STATE_PATH/.helm-card-edit"
+  "$STATE_PATH/.helm-card-edit-title"
+  "$STATE_PATH/.helm-card-edit-body"
+  "$STATE_PATH/.helm-status-back"
+  "$STATE_PATH/.helm-status-done"
+  "$STATE_PATH/.helm-status-waiting"
+  "$STATE_PATH/.helm-conflict"
+  "$STATE_PATH/.helm-conflict-status"
+  "$STATE_PATH/.helm-conflict-priority"
+  "$STATE_PATH/.helm-conflict-title"
+  "$STATE_PATH/.helm-conflict-body"
+  "$STATE_PATH/.helm-new-card"
+  "$STATE_PATH/.helm-card-deleted"
+)
 CARDS_FILE="$STATE_PATH/helm-cards.tsv"
 DELETED_FILE="$STATE_PATH/helm-deleted.tsv"
 POLL_FILE="$STATE_PATH/.helm-board-poll"
@@ -185,6 +207,9 @@ if [ -L "$HASH_FILE" ] || [ -L "$DISPATCH_FILE" ] || [ -L "$CARDS_FILE" ] || [ -
   || [ -L "$POLL_FILE" ] || [ -L "$RESUME_FILE" ]; then
   helm_fail_open "refusing symlinked Helm state"
 fi
+for divergence_file in "${DIVERGENCE_FILES[@]}"; do
+  [ -L "$divergence_file" ] && helm_fail_open "refusing symlinked Helm state"
+done
 
 # A forced run that stopped early asks the next run to stay forced.
 if [ -f "$RESUME_FILE" ]; then
@@ -335,13 +360,6 @@ while :; do
   CURSOR=$(jq -r '.data.user.projectV2.items.pageInfo.endCursor // empty' "$BOARD_JSON")
   [ -n "$CURSOR" ] || helm_fail_open "GitHub project item page is missing its cursor"
 done
-
-READ_SIGNATURE=$(jq -r "$(fm_helm_board_signature_program)" "$BOARD_JSON" | fm_helm_sha256_stdin) \
-  || helm_fail_open "could not read Helm board signature"
-if [ "$FORCE" -eq 0 ] && [ -f "$POLL_FILE" ] && [ "$(sed -n '1p' "$POLL_FILE" 2>/dev/null)" != "$READ_SIGNATURE" ]; then
-  printf 'check: Helm board and backlog both changed; run bin/fm-helm-sync.sh --force to reconcile\n'
-  exit 0
-fi
 
 # Parse every discovered home's backlog into one tagged union.
 BACKLOG_JSON="$TMP_DIR/backlog.json"
@@ -630,6 +648,13 @@ OLD_MARKERS="$TMP_DIR/old-markers.tsv"
 if [ -f "$DISPATCH_FILE" ]; then
   cat -- "$DISPATCH_FILE" >"$OLD_MARKERS" 2>/dev/null || : >"$OLD_MARKERS"
 fi
+OLD_DIVERGENCES="$TMP_DIR/old-divergences.tsv"
+: >"$OLD_DIVERGENCES"
+for divergence_file in "${DIVERGENCE_FILES[@]}"; do
+  divergence_kind=${divergence_file##*/.helm-}
+  [ -f "$divergence_file" ] || continue
+  awk -F '\t' -v k="$divergence_kind" 'NF >= 3 { print k "\t" $1 "\t" $2 "\t" $3 }' "$divergence_file" >>"$OLD_DIVERGENCES"
+done
 NOW_EPOCH=$(date +%s)
 
 # cache_publish_row <task-id> <row> - replace one card's row in the working
@@ -659,6 +684,22 @@ raise_wakes() {
     esac
     fm_wake_append check "$key" "$payload" || return 1
     RAISED_KEYS="$RAISED_KEYS$key"$'\n'
+  done
+}
+
+apply_divergence_ops() {
+  local op kind rest op_action item fp file tmp
+  split_items "$1"
+  for op in "${SPLIT[@]}"; do
+    [ -n "$op" ] || continue
+    kind=${op%%"$RS"*}; rest=${op#*"$RS"}
+    op_action=${rest%%"$RS"*}; rest=${rest#*"$RS"}
+    item=${rest%%"$RS"*}; fp=${rest#*"$RS"}
+    file="$STATE_PATH/.helm-$kind"
+    tmp=$(mktemp "$TMP_DIR/divergence.XXXXXX") || return 1
+    if [ -f "$file" ]; then awk -F '\t' -v t="$task_id" '$1 != t' "$file" >"$tmp" || return 1; fi
+    if [ "$op_action" = keep ]; then printf '%s\t%s\t%s\n' "$task_id" "$item" "$fp" >>"$tmp" || return 1; fi
+    chmod 0600 "$tmp" && mv -f -- "$tmp" "$file" || return 1
   done
 }
 
@@ -710,6 +751,7 @@ fi
 PLAN="$TMP_DIR/plan.nul"
 jq -j --slurpfile desired "$DESIRED_JSON" \
   --rawfile cards "$OLD_CARDS" --rawfile deleted "$OLD_DELETED" --rawfile markers "$OLD_MARKERS" \
+  --rawfile divergences "$OLD_DIVERGENCES" \
   --rawfile fps "$FPS" \
   --arg force "$FORCE" --arg dispatch_status "$DISPATCH_STATUS" --arg now "$NOW_EPOCH" \
   --arg tsv_existed "$TSV_EXISTED" \
@@ -721,6 +763,7 @@ FAILED=0
 REMAINING=0
 EXHAUSTED=0
 GUARD_CONFLICT=0
+CONFLICT_WAKE=0
 E=()
 
 read_entry() {
@@ -743,8 +786,8 @@ exec 3<"$PLAN"
 while read_entry; do
   phase=${E[0]} action=${E[1]} task_id=${E[2]} item_id=${E[3]} cache_row=${E[4]} draft_id=${E[5]}
   title=${E[6]} body=${E[7]} field_writes=${E[8]} wakes=${E[9]} marker=${E[10]} marker_fp=${E[11]}
-  writeback=${E[12]} home_path=${E[13]} tombstone=${E[14]} hold_reason=${E[15]} expected=${E[16]}
-  ack_create=${E[17]} ack_write=${E[18]} fingerprint=${E[19]} note=${E[20]}
+  divergence_ops=${E[12]} writeback=${E[13]} home_path=${E[14]} tombstone=${E[15]} hold_reason=${E[16]} expected=${E[17]}
+  ack_create=${E[18]} ack_write=${E[19]} fingerprint=${E[20]} note=${E[21]}
   [ -z "$note" ] || printf '%s\n' "$note" >&2
   if [ "$phase" = error ]; then
     helm_fail_open "$action"
@@ -754,6 +797,10 @@ while read_entry; do
     continue
   fi
   case "$phase:$action" in
+    summary:info)
+      raise_wakes "$wakes" || helm_fail_open "could not enqueue the Helm baseline summary"
+      continue
+      ;;
     record:skip)
       [ -z "$tombstone" ] || printf '%s\n' "$tombstone" >>"$NEW_DELETED"
       continue
@@ -769,6 +816,8 @@ while read_entry; do
         fi
       fi
       raise_wakes "$wakes" || helm_fail_open "could not enqueue the Helm wake for $task_id"
+      case "$wakes" in *"changed on both board and backlog"*) CONFLICT_WAKE=1 ;; esac
+      apply_divergence_ops "$divergence_ops" || helm_fail_open "could not update Helm divergence memory"
       case "$marker" in
         remove) marker_remove "$task_id" || helm_fail_open "could not clear the Helm dispatch marker for $task_id" ;;
         request) marker_replace "$task_id" "$item_id" "$DISPATCH_OPTION_ID" "$marker_fp" \
@@ -777,6 +826,7 @@ while read_entry; do
       ;;
     missing:ignore|missing:wake)
       raise_wakes "$wakes" || helm_fail_open "could not enqueue the new Helm card $task_id"
+      apply_divergence_ops "$divergence_ops" || helm_fail_open "could not update Helm divergence memory"
       continue
       ;;
     missing:close)
@@ -791,6 +841,8 @@ while read_entry; do
       printf '%s\n' "$tombstone" >>"$NEW_DELETED"
       raise_wakes "$wakes" \
         || printf 'fm-helm-sync: could not enqueue the Helm card deletion for %s\n' "$task_id" >&2
+      apply_divergence_ops "$divergence_ops" \
+        || helm_fail_open "could not update Helm divergence memory"
       continue
       ;;
     *)
@@ -815,12 +867,10 @@ while read_entry; do
     fi
     item_id=$CREATED_ITEM_ID
     land "$item_id" "$ack_create"
-    # Record the new card at once with an empty fingerprint: an interrupted run
-    # then still knows the card, and the next run compares it and finishes it.
-    cache_row=$(printf '%s\t%s\t\tdraft\t\t%s' "$task_id" "$item_id" "$NOW_EPOCH")
+    complete_cache_row=$(printf '%s\n' "$cache_row" | awk -F '\t' -v i="$item_id" 'BEGIN { OFS="\t" } {$2=i; print}')
+    cache_row=$(printf '%s\n' "$cache_row" | awk -F '\t' -v i="$item_id" 'BEGIN { OFS="\t" } {$2=i; $5=""; $6=""; print}')
     cache_publish_row "$task_id" "$cache_row" \
       || helm_fail_open "could not publish the Helm identity cache"
-    cache_row=$(printf '%s\t%s\t\tdraft\t%s\t%s' "$task_id" "$item_id" "$fingerprint" "$NOW_EPOCH")
   fi
   guard_board_write "$item_id" "$expected"
   guard_status=$?
@@ -845,10 +895,18 @@ while read_entry; do
       || helm_fail_open "could not clear the Helm dispatch marker for $task_id"
     continue
   fi
+  if [ "$action" = create ]; then
+    cache_row=$complete_cache_row
+  fi
   cache_publish_row "$task_id" "$cache_row" || helm_fail_open "could not publish the Helm identity cache"
   printf '%s\n' "$cache_row" >>"$NEW_CARDS"
 done
 exec 3<&-
+
+if [ "$CONFLICT_WAKE" -eq 1 ]; then
+  printf 'check: Helm board and backlog both changed; reconcile the affected card(s)\n'
+  exit 0
+fi
 
 if [ "$GUARD_CONFLICT" -eq 1 ]; then
   publish_progress || helm_fail_open "could not publish Helm board acknowledgement"

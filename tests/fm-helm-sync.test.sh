@@ -546,6 +546,9 @@ cat > "$case_dir/home/data/backlog.md" <<'EOF'
 - [ ] prio-task - Priority task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
 ## Done
 EOF
+board_json "$(jq -n --argjson a "$(draft_item prio-item prio-draft prio-task 'Priority task' 'x' Queued queued-status P2 p2-priority)" '[$a]')" > "$case_dir/board.json"
+: > "$case_dir/tasks-axi.log"; : > "$case_dir/gh.log"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "priority baseline run failed"
 board_json "$(jq -n --argjson a "$(draft_item prio-item prio-draft prio-task 'Priority task' 'x' Queued queued-status P4 p4-priority)" '[$a]')" > "$case_dir/board.json"
 : > "$case_dir/tasks-axi.log"; : > "$case_dir/gh.log"
 run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "priority write-back run failed"
@@ -567,8 +570,12 @@ cat > "$case_dir/home/data/backlog.md" <<'EOF'
 - [ ] failed-prio - Priority task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
 ## Done
 EOF
+board_json "$(jq -n --argjson a "$(draft_item failed-prio-item failed-prio-draft failed-prio 'Priority task' 'x' Queued queued-status P2 p2-priority)" '[$a]')" > "$case_dir/board.json"
+: > "$case_dir/tasks-axi.log"; : > "$case_dir/gh.log"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "priority failure baseline run failed"
 board_json "$(jq -n --argjson a "$(draft_item failed-prio-item failed-prio-draft failed-prio 'Priority task' 'x' Queued queued-status P4 p4-priority)" '[$a]')" > "$case_dir/board.json"
 : > "$case_dir/tasks-axi.log"; : > "$case_dir/gh.log"
+rm -f "$case_dir/home/state/.helm-sync-backlog.sha256"
 FM_FAKE_TASKS_FAIL_PRIORITY=1 run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 \
   || fail "priority write failure must fail open"
 grep -F $'\tcheck\thelm-priority:failed-prio\t' "$case_dir/home/state/.wake-queue" >/dev/null \
@@ -580,6 +587,124 @@ run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "priority retry sync 
 grep -F 'update failed-prio --priority 4' "$case_dir/tasks-axi.log" >/dev/null \
   || fail "a failed Priority write-back was not retried by forced reconciliation"
 pass "a failed Priority write-back queues reconciliation and remains retryable"
+
+case_dir="$TMP_ROOT/new-card-forward-progress"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] fresh-task - Fresh task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "new-card baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+sed 's/^## Queued$/## Done/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"; : > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "new-card forward progress run failed"
+grep -F 'itemId=created-item' "$case_dir/gh.log" | grep -F 'optionId=done-status' >/dev/null \
+  || fail "new-card Done progress was misread as a conflict"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "new-card forward progress raised a wake"
+pass "new cards retain a completed baseline after creation"
+
+# ---------------------------------------------------------------------------
+# Three-way merge: backlog progress wins over the recorded board baseline,
+# while genuine board edits are remembered after their first wake.
+# ---------------------------------------------------------------------------
+case_dir="$TMP_ROOT/three-way"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] merge-task - Merge task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item merge-item merge-draft merge-task 'Merge task' 'original body' 'In flight' flight-status P2 p2-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "three-way baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+: > "$case_dir/home/state/.wake-queue"
+
+# Ordinary forward progress: Done replaces In flight without a wake.
+sed 's/^## In flight$/## Done/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "forward status run failed"
+grep -F 'itemId=merge-item' "$case_dir/gh.log" | grep -F 'optionId=done-status' >/dev/null \
+  || fail "backlog Done did not overwrite the matching board baseline"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "forward status progress raised a wake"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+pass "forward status progress overwrites the board without a wake"
+
+# Ordinary body progress rewrites the card without a wake.
+sed 's/2026-09-05/2026-09-06/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "forward body run failed"
+grep -F 'applied draftIssueId=merge-draft' "$case_dir/gh.log" >/dev/null \
+  || fail "a backlog body change did not rewrite the card"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "forward body progress raised a wake"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+pass "forward body progress rewrites the board without a wake"
+
+# A genuine board text edit wakes once, then remains quiet until it changes.
+cp "$case_dir/board.json" "$case_dir/converged-board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "merge-item") | .content.title) = "Captain title"' \
+  "$case_dir/converged-board.json" > "$case_dir/board.json"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "board text divergence run failed"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "repeated board text divergence run failed"
+[ "$(grep -c $'\tcheck\thelm-card-edit:merge-task\t' "$case_dir/home/state/.wake-queue")" -eq 1 ] \
+  || fail "the same board text divergence did not wake exactly once"
+pass "repeated board text divergence raises one remembered wake"
+
+sed 's/Merge task/Captain title/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"; : > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "board-text reconciliation run failed"
+sed 's/2026-09-06/2026-09-07/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "post-reconciliation body run failed"
+grep -F 'applied draftIssueId=merge-draft' "$case_dir/gh.log" >/dev/null \
+  || fail "a reconciled board edit left the text baseline stale"
+pass "reconciled board edits advance the text baseline"
+cp "$case_dir/converged-board.json" "$case_dir/board.json"
+sed -e 's/Captain title/Merge task/' -e 's/2026-09-07/2026-09-06/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "three-way test reset run failed"
+
+# A backlog Priority change wins over a stale board value; it is not written
+# back as though the captain had edited the board.
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Done
+- [ ] merge-task - Merge task (repo: firstmate) (kind: ship) (priority: 4) (since: 2026-09-06)
+EOF
+cp "$case_dir/converged-board.json" "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"; : > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "backlog Priority change run failed"
+grep -F 'itemId=merge-item' "$case_dir/gh.log" | grep -F 'optionId=p4-priority' >/dev/null \
+  || fail "a backlog Priority change did not overwrite the stale board value"
+if grep -F 'update merge-task --priority' "$case_dir/tasks-axi.log" >/dev/null; then
+  fail "a backlog Priority change was misread as a board edit"
+fi
+pass "backlog Priority progress overwrites a stale board value"
+
+rm -f "$case_dir/home/state/helm-cards.tsv"
+board_json "$(jq -n --argjson a "$(draft_item merge-item merge-draft merge-task 'Stale title' 'stale body' Done done-status P2 p2-priority)" '[$a]')" > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "baseline rebuild run failed"
+grep -F 'applied draftIssueId=merge-draft' "$case_dir/gh.log" >/dev/null \
+  || fail "a no-baseline card was not rewritten from the backlog"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a no-baseline card raised a wake"
+pass "no-baseline cards rebuild silently"
 
 # ---------------------------------------------------------------------------
 # Debounce and fail-open posture.
@@ -658,20 +783,169 @@ board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft confl
 run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "conflict baseline sync failed"
 run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "conflict baseline poll failed"
 baseline_hash=$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")
-sed 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+sed 's/^## Queued$/## Done/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
   || fail "could not stage the conflict backlog"
 mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
 board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft conflict-task 'Captain title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
 : > "$case_dir/gh.log"
 out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "pre-write conflict sync exited nonzero: $out"
-assert_contains "$out" "Helm board and backlog both changed" \
-  "a board delta since poll baseline did not request reconciliation"
-if grep -F 'updateProjectV2' "$case_dir/gh.log" >/dev/null || grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
-  fail "a pre-write board conflict mutated the board"
+grep -F 'helm-card-edit:conflict-task' "$case_dir/home/state/.wake-queue" >/dev/null \
+  || fail "a board/backlog conflict did not request reconciliation"
+grep -F 'itemId=conflict-item' "$case_dir/gh.log" | grep -F 'optionId=done-status' >/dev/null \
+  || fail "an independent completion did not reach the board"
+if grep -F 'applied draftIssueId=conflict-draft' "$case_dir/gh.log" >/dev/null; then
+  fail "an independent completion rewrote the captain text edit"
 fi
-[ "$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")" = "$baseline_hash" ] \
-  || fail "a pre-write board conflict advanced the sync debounce state"
-pass "a pre-write board conflict preserves the captain edit"
+pass "an independent completion preserves the captain edit"
+: > "$case_dir/home/state/.wake-queue"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "repeated pre-write conflict sync exited nonzero: $out"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a remembered board/backlog conflict woke again"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "persisted pre-write conflict sync exited nonzero: $out"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a persisted conflict fabricated a status reversal"
+pass "a board/backlog conflict wakes once"
+
+case_dir="$TMP_ROOT/conflict-progress"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] conflict-progress - Original title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item conflict-progress-item conflict-progress-draft conflict-progress 'Original title' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "conflict-progress baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "conflict-progress-item") | .content.title) = "Captain title"' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+sed -e 's/^## Queued$/## Done/' -e 's/Original title/Backlog title/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "conflict-progress write run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "conflict-progress replay run failed"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "independent progress retriggered a title conflict wake"
+pass "independent progress does not repeat a title conflict"
+
+case_dir="$TMP_ROOT/title-body-merge"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] text-task - Original title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item text-item text-draft text-task 'Original title' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "title-body baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "text-item") | .content.title) = "Captain title"' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+sed 's/2026-09-09/2026-09-10/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "title-body merge run failed"
+jq -e '.data.user.projectV2.items.nodes[] | select(.id == "text-item" and .content.title == "Captain title" and (.content.body | contains("2026-09-10")))' \
+  "$case_dir/board-state.json" >/dev/null || fail "a body update overwrote the captain title"
+: > "$case_dir/home/state/.wake-queue"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "title-body merge replay run failed"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a body update retriggered a title edit wake"
+pass "body progress preserves a captain title edit"
+
+case_dir="$TMP_ROOT/partial-text-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] partial-text - Original title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item partial-item partial-draft partial-text 'Original title' 'original body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "partial text baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "partial-item") | .content) |= (.title = "Captain title" | .body = "`partial-text`\ncaptain body")' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+sed -e 's/Original title/Backlog title/' -e 's/2026-09-09/2026-09-10/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "partial text conflict run failed"
+grep -F 'helm-card-edit:partial-text' "$case_dir/home/state/.wake-queue" >/dev/null \
+  || fail "a partial text conflict did not wake"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "partial-item") | .content.title) = "Backlog title"' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "partial text reconciliation run failed"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a remaining text conflict retriggered its wake"
+pass "partial text reconciliation preserves conflict acknowledgement"
+
+case_dir="$TMP_ROOT/waiting-status"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] waiting-task - Waiting task (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item waiting-item waiting-draft waiting-task 'Waiting task' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "Waiting baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "waiting-item") | .fieldValues.nodes[] | select(.field.name == "Status")) |= (.name = "Waiting on you" | .optionId = "waiting-status")' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "Waiting reconciliation run failed"
+sed 's/^## Queued$/## Done/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"; : > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "Waiting completion run failed"
+grep -F 'itemId=waiting-item' "$case_dir/gh.log" | grep -F 'optionId=done-status' >/dev/null \
+  || fail "Waiting on you blocked a later Done transition"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "Waiting completion raised a stale-status wake"
+pass "Waiting on you yields to later completion"
+
+case_dir="$TMP_ROOT/status-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] status-task - Status task (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item status-item status-draft status-task 'Status task' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "status-conflict baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "status-item") | .fieldValues.nodes[] | select(.field.name == "Status")) |= (.name = "Waiting on you" | .optionId = "waiting-status")' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+sed 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "status-conflict reconciliation run failed"
+grep -F 'helm-card-edit:status-task' "$case_dir/home/state/.wake-queue" >/dev/null \
+  || fail "a status-only conflict did not request reconciliation"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "repeated status-conflict sync failed"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a remembered status-only conflict woke again"
+pass "a status-only conflict wakes once"
 
 case_dir="$TMP_ROOT/late-prewrite-conflict"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
@@ -872,6 +1146,7 @@ done
 mv "$case_dir/board-state.json" "$case_dir/board.json"
 out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post fleet-scale poll failed: $out"
 [ -z "$out" ] || fail "a fleet-scale run's own writes were read back as a captain edit: $out"
+: > "$case_dir/home/state/.wake-queue"
 : > "$case_dir/gh.log"
 out=$(run_sync "$case_dir" "$fb" --force 2>&1) || fail "fleet-scale steady-state run exited nonzero: $out"
 assert_contains "$out" "fm-helm-sync: synchronized" "a steady-state forced run did not finish"

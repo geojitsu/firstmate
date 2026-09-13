@@ -146,13 +146,17 @@ A `--force` run that reaches the partial path leaves `state/.helm-sync-resume` s
 Field authority: `data/backlog.md` in the owning home is authoritative for a card's title, body, kind, repository, priority, and lifecycle status.
 The board is authoritative only for the captain's own edits, only for Priority, Status, and card text, and only on an explicit `bin/fm-helm-sync.sh --force` read.
 On `--force` a captain edit to a card's Priority is written back into the owning backlog row; a move into the dispatch status raises one durable dispatch `check` wake for ordinary firstmate intake; and a move to Done on a live task, a move backwards, a title or body edit, a new captain card, or a deleted card each raise one `check` wake and change no backlog task mechanically.
+The sync compares Status, Priority, title, and body with their own recorded board baselines.
+When both the board and backlog changed one field, the sync preserves the board value and raises one reconciliation wake for that unresolved divergence.
+It still writes unrelated backlog fields, so a captain title edit does not block a status or body update.
 On the normal (non `--force`) path the backlog wins unless the board changed since the poll baseline or immediately before a board write.
 In either conflict the sync preserves the board item, raises the existing reconciliation `check` wake, and does not read the edit back mechanically.
 GitHub Projects has no conditional or versioned mutation, so the tiny interval between the pre-write read and mutation is an accepted containment limit.
 The next reverse poll detects a divergence in that interval and raises the same reconciliation wake.
 The script never deletes a card and never spawns work.
-The sync records each request with a durable marker and a queue key, so repeating the same board edit never enqueues duplicate wakes.
-`state/helm-cards.tsv` (mode 0600) is the card-to-task identity cache, rebuilt from the board when absent; the `bin/fm-helm-sync.sh` header owns its row format and the per-card publication rule.
+The sync records each request and unresolved field divergence with durable markers and queue keys, so repeating an unchanged board edit never enqueues duplicate wakes.
+`state/helm-cards.tsv` (mode 0600) maps cards to tasks and stores the per-field board baselines used for reconciliation.
+The sync rebuilds the cache silently from the board when absent, and the `bin/fm-helm-sync.sh` header owns its row format and the per-card publication rule.
 
 `bin/fm-helm-poll.sh` is the automatically registered watcher check (through `state/helm-board.check.sh`, bound with `bin/fm-check-register.sh helm-board`) that wakes firstmate to run `--force` when the captain edits a card, including when a backlog change is pending.
 It is inert until `config/helm.json` exists.
