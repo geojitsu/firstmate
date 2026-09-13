@@ -451,7 +451,7 @@ fm_helm_plan_program() {
                 {id: $kind_field, name: "Kind", value: $d.kind, option: $ko},
                 {id: $priority_field, name: "Priority", value: $d.priority, option: $pro} ] as $writes
               | {phase: "record", action: "create", task: $r.id, title: $d.title, body: $d.body,
-                 cache: ($r.id + "\t\t\tdraft\t\t\t" + ($d.title | @base64) + "\t" + ($d.body | @base64) + "\t" + $now),
+                 cache: ($r.id + "\t\t\tdraft\t" + $so + "\t" + $pro + "\t" + ($d.title | @base64) + "\t" + ($d.body | @base64) + "\t" + $now),
                  fields: $writes, marker: (if has_marker($r.id) then "remove" else "" end),
                  home: $r.home_path, note: $d.note, fp: $fp,
                  expected: ({title: $d.title, body: $d.body, fields: []} | tojson),

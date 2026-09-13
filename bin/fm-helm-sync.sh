@@ -855,9 +855,8 @@ while read_entry; do
     fi
     item_id=$CREATED_ITEM_ID
     land "$item_id" "$ack_create"
-    # Record the new card at once with an empty fingerprint: an interrupted run
-    # then still knows the card, and the next run compares it and finishes it.
-    cache_row=$(printf '%s\n' "$cache_row" | awk -F '\t' -v i="$item_id" 'BEGIN { OFS="\t" } {$2=i; print}')
+    complete_cache_row=$(printf '%s\n' "$cache_row" | awk -F '\t' -v i="$item_id" 'BEGIN { OFS="\t" } {$2=i; print}')
+    cache_row=$(printf '%s\n' "$cache_row" | awk -F '\t' -v i="$item_id" 'BEGIN { OFS="\t" } {$2=i; $5=""; $6=""; print}')
     cache_publish_row "$task_id" "$cache_row" \
       || helm_fail_open "could not publish the Helm identity cache"
   fi
@@ -883,6 +882,9 @@ while read_entry; do
     [ "$marker" != remove ] || marker_remove "$task_id" \
       || helm_fail_open "could not clear the Helm dispatch marker for $task_id"
     continue
+  fi
+  if [ "$action" = create ]; then
+    cache_row=$complete_cache_row
   fi
   cache_publish_row "$task_id" "$cache_row" || helm_fail_open "could not publish the Helm identity cache"
   printf '%s\n' "$cache_row" >>"$NEW_CARDS"

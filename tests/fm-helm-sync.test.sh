@@ -588,6 +588,29 @@ grep -F 'update failed-prio --priority 4' "$case_dir/tasks-axi.log" >/dev/null \
   || fail "a failed Priority write-back was not retried by forced reconciliation"
 pass "a failed Priority write-back queues reconciliation and remains retryable"
 
+case_dir="$TMP_ROOT/new-card-forward-progress"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] fresh-task - Fresh task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "new-card baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+sed 's/^## Queued$/## Done/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"; : > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "new-card forward progress run failed"
+grep -F 'itemId=created-item' "$case_dir/gh.log" | grep -F 'optionId=done-status' >/dev/null \
+  || fail "new-card Done progress was misread as a conflict"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "new-card forward progress raised a wake"
+pass "new cards retain a completed baseline after creation"
+
 # ---------------------------------------------------------------------------
 # Three-way merge: backlog progress wins over the recorded board baseline,
 # while genuine board edits are remembered after their first wake.
