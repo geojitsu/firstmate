@@ -697,20 +697,14 @@ if grep -F 'update merge-task --priority' "$case_dir/tasks-axi.log" >/dev/null; 
 fi
 pass "backlog Priority progress overwrites a stale board value"
 
-# No baseline is rebuilt from board-current and summarized once, without a
-# per-card divergence wake.
 rm -f "$case_dir/home/state/helm-cards.tsv"
 board_json "$(jq -n --argjson a "$(draft_item merge-item merge-draft merge-task 'Stale title' 'stale body' Done done-status P2 p2-priority)" '[$a]')" > "$case_dir/board.json"
 : > "$case_dir/gh.log"; : > "$case_dir/home/state/.wake-queue"
 run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "baseline rebuild run failed"
 grep -F 'applied draftIssueId=merge-draft' "$case_dir/gh.log" >/dev/null \
   || fail "a no-baseline card was not rewritten from the backlog"
-[ "$(grep -c $'\tcheck\thelm-baseline-rebuilt\t' "$case_dir/home/state/.wake-queue")" -eq 1 ] \
-  || fail "a no-baseline run did not raise exactly one summary wake"
-if grep -F 'helm-card-edit:merge-task' "$case_dir/home/state/.wake-queue" >/dev/null; then
-  fail "a no-baseline card raised a per-card wake"
-fi
-pass "no-baseline cards rebuild silently with one summary wake"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a no-baseline card raised a wake"
+pass "no-baseline cards rebuild silently"
 
 # ---------------------------------------------------------------------------
 # Debounce and fail-open posture.
@@ -789,7 +783,7 @@ board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft confl
 run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "conflict baseline sync failed"
 run_poll "$case_dir" "$fb" >/dev/null 2>&1 || fail "conflict baseline poll failed"
 baseline_hash=$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")
-sed 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
+sed 's/^## Queued$/## Done/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
   || fail "could not stage the conflict backlog"
 mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
 board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft conflict-task 'Captain title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -797,12 +791,12 @@ board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft confl
 out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "pre-write conflict sync exited nonzero: $out"
 grep -F 'helm-card-edit:conflict-task' "$case_dir/home/state/.wake-queue" >/dev/null \
   || fail "a board/backlog conflict did not request reconciliation"
-if grep -F 'updateProjectV2' "$case_dir/gh.log" >/dev/null || grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
-  fail "a pre-write board conflict mutated the board"
+grep -F 'itemId=conflict-item' "$case_dir/gh.log" | grep -F 'optionId=done-status' >/dev/null \
+  || fail "an independent completion did not reach the board"
+if grep -F 'applied draftIssueId=conflict-draft' "$case_dir/gh.log" >/dev/null; then
+  fail "an independent completion rewrote the captain text edit"
 fi
-[ "$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")" = "$baseline_hash" ] \
-  || fail "a pre-write board conflict advanced the sync debounce state"
-pass "a pre-write board conflict preserves the captain edit"
+pass "an independent completion preserves the captain edit"
 : > "$case_dir/home/state/.wake-queue"
 out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "repeated pre-write conflict sync exited nonzero: $out"
 [ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a remembered board/backlog conflict woke again"

@@ -479,11 +479,10 @@ fm_helm_plan_program() {
             | ($cs == $waiting_id and $status_board_changed) as $waiting_status_changed
             | (($cp != $bp) and ($pro == $bp)) as $priority_board_changed
             | ((($ct != $bt) or ($cb != $bb)) and ($dt == $bt) and ($db == $bb)) as $text_board_changed
-            | (($cs != $bs) or ($cp != $bp) or ($ct != $bt) or ($cb != $bb)) as $board_changed
-            | (($so != $bs) or ($pro != $bp) or ($dt != $bt) or ($db != $bb)) as $backlog_changed
-            | ($board_changed and $backlog_changed and
-               (($cs != $so) or ($cp != $pro) or ($ct != $dt) or ($cb != $db))) as $conflict
-            | (($ct != $bt) or ($cb != $bb)) as $text_conflict
+            | (($cs != $bs) and ($so != $bs) and ($cs != $so)) as $status_conflict
+            | (($cp != $bp) and ($pro != $bp) and ($cp != $pro)) as $priority_conflict
+            | ((($ct != $bt) or ($cb != $bb)) and (($dt != $bt) or ($db != $bb)) and (($ct != $dt) or ($cb != $db))) as $text_conflict
+            | ($status_conflict or $priority_conflict or $text_conflict) as $conflict
             | ([$cs, $cp, $ct, $cb] | tojson | @base64) as $conflict_fp
             | ([$ct, $cb] | tojson | @base64) as $text_fp
             | ($r.id + "\t" + $card.id + "\t" + $node + "\t" + (if $is_issue then "issue" else "draft" end) + "\t" +
@@ -494,8 +493,7 @@ fm_helm_plan_program() {
             | if $force == "0" and $old != null and $old.v2 and $old.status == $so and $old.priority == $pro and $old.title == $dt and $old.body == $db then
                 {phase: "record", action: "none", task: $r.id, item: $card.id, cache: $cache, note: $d.note}
               else
-                (($ct != $dt or $cb != $db) and $text_board_changed) as $text_conflict
-                | (if $is_issue or $text_board_changed then
+                (if $is_issue or $text_board_changed or $text_conflict then
                        {draft: "", wakes: (if $is_issue or divergence_matches("card-edit"; $r.id; $card.id; $text_fp) then [] else [{key:("helm-card-edit:" + $r.id), payload:("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}] end)}
                    elif ($ct != $dt or $cb != $db) then
                      (if $node == "" then {error: ("Helm card " + $r.id + " has no draft issue id")} else {draft: $node, wakes: []} end)
@@ -531,16 +529,21 @@ fm_helm_plan_program() {
                                                     payload: ("check: captain moved Helm card " + $r.id + " back to " + $cur_status + "; reconcile it into the backlog")}] end)}
                         else {deferred: false, kind: "", wakes: []} end)
                      else {deferred: false, wakes: []} end) as $st
-                  | ( (if ($conflict | not) and ($dispatch | not) and ($st.deferred | not) and $status_normal and $cur_status != $d.status
+                  | ( (if ($status_conflict | not) and ($dispatch | not) and ($st.deferred | not) and $status_normal and $cur_status != $d.status
                        then [{id: $status_field, name: "Status", value: $d.status, option: $so}] else [] end)
-                    + (if ($conflict | not) and ($card | fieldopt("Project")) != $po
+                    + (if ($card | fieldopt("Project")) != $po
                        then [{id: $project_field, name: "Project", value: $d.project, option: $po}] else [] end)
-                    + (if ($conflict | not) and ($card | fieldopt("Kind")) != $ko
+                    + (if ($card | fieldopt("Kind")) != $ko
                        then [{id: $kind_field, name: "Kind", value: $d.kind, option: $ko}] else [] end)
-                    + (if ($conflict | not) and ($writeback | not) and ($card | fieldopt("Priority")) != $pro
+                    + (if ($priority_conflict | not) and ($writeback | not) and ($card | fieldopt("Priority")) != $pro
                        then [{id: $priority_field, name: "Priority", value: $d.priority, option: $pro}] else [] end) ) as $writes
+                  | ($r.id + "\t" + $card.id + "\t" + $node + "\t" + (if $is_issue then "issue" else "draft" end) + "\t" +
+                     (if any($writes[]; .name == "Status") then $so elif $status_conflict then $bs elif $waiting_status_changed then $cs elif $rebuilt or $status_normal or $cs == $so then $so else $bs end) + "\t" +
+                     (if any($writes[]; .name == "Priority") then $pro elif $priority_conflict then $bp elif $rebuilt then $pro else (if $priority_board_changed then $cp else $pro end) end) + "\t" +
+                     (if $text.draft != "" then $dt elif $text_conflict then $bt elif $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $dt else $bt end) + "\t" +
+                     (if $text.draft != "" then $db elif $text_conflict then $bb elif $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $db else $bb end) + "\t" + $now) as $cache
                   | {phase: "record",
-                     action: (if ($conflict | not) and ($text.draft != "" or ($writes | length) > 0) then "update" else "none" end),
+                     action: (if $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
                      task: $r.id, item: $card.id, cache: $cache, draft: $text.draft,
                      title: $d.title, body: $d.body, fields: $writes,
                      wakes: ($text.wakes + $disp.wakes + $st.wakes
@@ -611,11 +614,7 @@ fm_helm_plan_program() {
               end
           end ]
       end;
-    ([ $records[] | select(($old_by_task[.id] == null) or (($old_by_task[.id].v2 | not))) | .id ] | unique) as $rebuilt_ids
-    | ((record_entries + missing_entries + deleted_entries)
-       + (if ($rebuilt_ids | length) > 0 then
-            [{phase:"summary", action:"info", wakes:[{key:"helm-baseline-rebuilt", payload:("check: Helm sync rebuilt the baseline for cards: " + ($rebuilt_ids | join(", ")))}]}]
-          else [] end)) as $all
+    (record_entries + missing_entries + deleted_entries) as $all
     | ([$all[] | select(.phase == "error")] + [$all[] | select(.phase != "error")])[]
     | entry(.)
 JQ
