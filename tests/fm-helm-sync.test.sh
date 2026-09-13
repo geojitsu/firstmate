@@ -804,6 +804,33 @@ out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "persisted pre-write conflict syn
 [ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a persisted conflict fabricated a status reversal"
 pass "a board/backlog conflict wakes once"
 
+case_dir="$TMP_ROOT/conflict-progress"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] conflict-progress - Original title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item conflict-progress-item conflict-progress-draft conflict-progress 'Original title' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "conflict-progress baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "conflict-progress-item") | .content.title) = "Captain title"' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+sed -e 's/^## Queued$/## Done/' -e 's/Original title/Backlog title/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "conflict-progress write run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "conflict-progress replay run failed"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "independent progress retriggered a title conflict wake"
+pass "independent progress does not repeat a title conflict"
+
 case_dir="$TMP_ROOT/title-body-merge"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
