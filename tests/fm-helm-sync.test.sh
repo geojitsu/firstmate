@@ -803,6 +803,66 @@ fi
 [ "$(cat "$case_dir/home/state/.helm-sync-backlog.sha256")" = "$baseline_hash" ] \
   || fail "a pre-write board conflict advanced the sync debounce state"
 pass "a pre-write board conflict preserves the captain edit"
+: > "$case_dir/home/state/.wake-queue"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "repeated pre-write conflict sync exited nonzero: $out"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a remembered board/backlog conflict woke again"
+pass "a board/backlog conflict wakes once"
+
+case_dir="$TMP_ROOT/waiting-status"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] waiting-task - Waiting task (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item waiting-item waiting-draft waiting-task 'Waiting task' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "Waiting baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "waiting-item") | .fieldValues.nodes[] | select(.field.name == "Status")) |= (.name = "Waiting on you" | .optionId = "waiting-status")' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "Waiting reconciliation run failed"
+sed 's/^## Queued$/## Done/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/gh.log"; : > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "Waiting completion run failed"
+grep -F 'itemId=waiting-item' "$case_dir/gh.log" | grep -F 'optionId=done-status' >/dev/null \
+  || fail "Waiting on you blocked a later Done transition"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "Waiting completion raised a stale-status wake"
+pass "Waiting on you yields to later completion"
+
+case_dir="$TMP_ROOT/status-conflict"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] status-task - Status task (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item status-item status-draft status-task 'Status task' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "status-conflict baseline run failed"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+jq '(.data.user.projectV2.items.nodes[] | select(.id == "status-item") | .fieldValues.nodes[] | select(.field.name == "Status")) |= (.name = "Waiting on you" | .optionId = "waiting-status")' \
+  "$case_dir/board.json" > "$case_dir/board.next"
+mv "$case_dir/board.next" "$case_dir/board.json"
+sed 's/^## Queued$/## In flight/' "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.next"
+mv "$case_dir/home/data/backlog.next" "$case_dir/home/data/backlog.md"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "status-conflict reconciliation run failed"
+grep -F 'helm-card-edit:status-task' "$case_dir/home/state/.wake-queue" >/dev/null \
+  || fail "a status-only conflict did not request reconciliation"
+: > "$case_dir/home/state/.wake-queue"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "repeated status-conflict sync failed"
+[ ! -s "$case_dir/home/state/.wake-queue" ] || fail "a remembered status-only conflict woke again"
+pass "a status-only conflict wakes once"
 
 case_dir="$TMP_ROOT/late-prewrite-conflict"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"

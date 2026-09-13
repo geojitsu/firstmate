@@ -425,6 +425,7 @@ fm_helm_plan_program() {
   | fid("Kind") as $kind_field
   | fid("Priority") as $priority_field
   | opt("Status"; "Done") as $done_id
+  | opt("Status"; "Waiting on you") as $waiting_id
   | opt("Status"; $dispatch_status) as $dispatch_option
   | def record_entries:
       [ $records[] as $r
@@ -475,6 +476,7 @@ fm_helm_plan_program() {
             | ($old == null or ($old.v2 | not)) as $rebuilt
             | ($rebuilt or $cs == $bs) as $status_normal
             | ($cs != $bs) as $status_board_changed
+            | ($cs == $waiting_id and $status_board_changed) as $waiting_status_changed
             | (($cp != $bp) and ($pro == $bp)) as $priority_board_changed
             | ((($ct != $bt) or ($cb != $bb)) and ($dt == $bt) and ($db == $bb)) as $text_board_changed
             | (($cs != $bs) or ($cp != $bp) or ($ct != $bt) or ($cb != $bb)) as $board_changed
@@ -482,8 +484,10 @@ fm_helm_plan_program() {
             | ($board_changed and $backlog_changed and
                (($cs != $so) or ($cp != $pro) or ($ct != $dt) or ($cb != $db))) as $conflict
             | (($ct != $bt) or ($cb != $bb)) as $text_conflict
+            | ([$cs, $cp, $ct, $cb] | tojson | @base64) as $conflict_fp
+            | ([$ct, $cb] | tojson | @base64) as $text_fp
             | ($r.id + "\t" + $card.id + "\t" + $node + "\t" + (if $is_issue then "issue" else "draft" end) + "\t" +
-                (if $rebuilt or $status_normal or $cs == $so then $so else $bs end) + "\t" +
+                (if $rebuilt or $status_normal or $cs == $so then $so elif $waiting_status_changed then $cs else $bs end) + "\t" +
                 (if $rebuilt then $pro else (if $priority_board_changed then $cp else $pro end) end) + "\t" +
                 (if $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $dt else $bt end) + "\t" +
                 (if $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $db else $bb end) + "\t" + $now) as $cache
@@ -491,12 +495,11 @@ fm_helm_plan_program() {
                 {phase: "record", action: "none", task: $r.id, item: $card.id, cache: $cache, note: $d.note}
               else
                 (($ct != $dt or $cb != $db) and $text_board_changed) as $text_conflict
-                | (($ct + ":" + $cb) as $text_fp
-                   | (if $is_issue or $text_board_changed then
+                | (if $is_issue or $text_board_changed then
                        {draft: "", wakes: (if $is_issue or divergence_matches("card-edit"; $r.id; $card.id; $text_fp) then [] else [{key:("helm-card-edit:" + $r.id), payload:("check: captain edited Helm card " + $r.id + " text; reconcile it into the backlog")}] end)}
                    elif ($ct != $dt or $cb != $db) then
                      (if $node == "" then {error: ("Helm card " + $r.id + " has no draft issue id")} else {draft: $node, wakes: []} end)
-                   else {draft: "", wakes: []} end)) as $text
+                   else {draft: "", wakes: []} end) as $text
                 | if $text.error != null then {phase: "error", action: $text.error}
                   else
                   ($card | fieldval("Status")) as $cur_status
@@ -512,7 +515,13 @@ fm_helm_plan_program() {
                                        payload: ("check: Helm dispatch request for " + $r.id + " (board item " + $card.id + ")")}]}
                         end)
                      else {marker: (if has_marker($r.id) then "remove" else "" end), wakes: []} end) as $disp
-                  | (if ($dispatch | not) and $status_board_changed and $cur_status != $d.status then
+                  | ($cur_status_id + ":" + $so) as $waiting_fp
+                  | (if ($dispatch | not) and $cur_status != $d.status and
+                         $cur_status_id == $waiting_id and
+                         ($status_board_changed or divergence_matches("status-waiting"; $r.id; $card.id; $waiting_fp)) then
+                          {deferred: true, kind: "status-waiting", wakes: (if divergence_matches("status-waiting"; $r.id; $card.id; $waiting_fp) then [] else [{key: ("helm-status-waiting:" + $r.id),
+                                                    payload: ("check: captain moved Helm card " + $r.id + " to Waiting on you; reconcile it into the backlog")}] end)}
+                     elif ($dispatch | not) and $status_board_changed and $cur_status != $d.status then
                        (if $cur_status == "Done" and $d.status != "Done" then
                           {deferred: true, kind: "status-done", wakes: (if divergence_matches("status-done"; $r.id; $card.id; $cur_status_id) then [] else [{key: ("helm-status-done:" + $r.id),
                                                     payload: ("check: captain moved Helm card " + $r.id + " to Done while the task is live; confirm and reconcile")}] end)}
@@ -535,10 +544,12 @@ fm_helm_plan_program() {
                      task: $r.id, item: $card.id, cache: $cache, draft: $text.draft,
                      title: $d.title, body: $d.body, fields: $writes,
                      wakes: ($text.wakes + $disp.wakes + $st.wakes
-                       + (if $conflict then [{key:("helm-card-edit:" + $r.id), payload:("check: Helm card " + $r.id + " changed on both board and backlog; reconcile the conflict")}] else [] end)),
-                     divergence_ops: ((if ((($text_board_changed or $text_conflict) and ($ct != $dt or $cb != $db))) then [{kind:"card-edit", action:"keep", item:$card.id, fp:($ct + ":" + $cb)}] elif (divergence_for("card-edit"; $r.id) != null) then [{kind:"card-edit", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if $conflict and (divergence_matches("conflict"; $r.id; $card.id; $conflict_fp) | not) then [{key:("helm-card-edit:" + $r.id), payload:("check: Helm card " + $r.id + " changed on both board and backlog; reconcile the conflict")}] else [] end)),
+                     divergence_ops: ((if ((($text_board_changed or $text_conflict) and ($ct != $dt or $cb != $db))) then [{kind:"card-edit", action:"keep", item:$card.id, fp:$text_fp}] elif (divergence_for("card-edit"; $r.id) != null) then [{kind:"card-edit", action:"remove", item:$card.id, fp:""}] else [] end)
                        + (if ($st.kind // "") == "status-back" then [{kind:"status-back", action:"keep", item:$card.id, fp:$cur_status_id}] elif divergence_for("status-back"; $r.id) != null then [{kind:"status-back", action:"remove", item:$card.id, fp:""}] else [] end)
                        + (if ($st.kind // "") == "status-done" then [{kind:"status-done", action:"keep", item:$card.id, fp:$cur_status_id}] elif divergence_for("status-done"; $r.id) != null then [{kind:"status-done", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if ($st.kind // "") == "status-waiting" then [{kind:"status-waiting", action:"keep", item:$card.id, fp:$waiting_fp}] elif divergence_for("status-waiting"; $r.id) != null then [{kind:"status-waiting", action:"remove", item:$card.id, fp:""}] else [] end)
+                       + (if $conflict then [{kind:"conflict", action:"keep", item:$card.id, fp:$conflict_fp}] elif divergence_for("conflict"; $r.id) != null then [{kind:"conflict", action:"remove", item:$card.id, fp:""}] else [] end)
                        + (if divergence_for("new-card"; $r.id) != null then [{kind:"new-card", action:"remove", item:$card.id, fp:""}] else [] end)
                        + (if divergence_for("card-deleted"; $r.id) != null then [{kind:"card-deleted", action:"remove", item:$card.id, fp:""}] else [] end)),
                      marker: $disp.marker, marker_fp: $dispatch_fp,

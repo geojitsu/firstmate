@@ -111,6 +111,8 @@ DIVERGENCE_FILES=(
   "$STATE_PATH/.helm-card-edit"
   "$STATE_PATH/.helm-status-back"
   "$STATE_PATH/.helm-status-done"
+  "$STATE_PATH/.helm-status-waiting"
+  "$STATE_PATH/.helm-conflict"
   "$STATE_PATH/.helm-new-card"
   "$STATE_PATH/.helm-card-deleted"
 )
