@@ -34,7 +34,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-helm-sync.sh`        | Reconcile the opt-in GitHub Project board against every local home's `data/backlog.md`, accept captain board edits back on `--force`, and queue captain dispatch and delete-confirmation wakes |
 | `fm-helm-watch.sh`       | Watcher-check adapter for Helm sync: silence successful/debounced runs and expose fail-open sync diagnostics as durable check wakes |
 | `fm-helm-poll.sh`        | One cheap read-only poll for a captain edit to the Helm board; prints a forced-reconciliation wake for idle or concurrent backlog changes |
-| `fm-helm-lib.sh`         | Shared Helm helpers: local fleet home discovery, the one `data/backlog.md` parser, the combined debounce hash, and sha256 helpers |
+| `fm-helm-lib.sh`         | Shared Helm helpers: local fleet home discovery, the one `data/backlog.md` parser, the combined debounce hash, the shared board signature, the card renderer and one-pass reconciliation planner, and sha256 helpers |
 | `fm-captain-hold.sh`     | Hold tasks for the captain, record the captain's answers, gate investigation completion, and report record divergence between the status log and the backlog |
 | `fm-decision-hold.sh`    | One-release compatibility shim mapping the retired decision commands onto fm-captain-hold.sh |
 | `fm-brief.sh`            | Scaffold ship (explicit `--mode`), scout, secondmate-charter, and Herdr-lab briefs, with Captain's intent and Firstmate spec subsections on ship/scout |

@@ -20,8 +20,11 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 # board_json <extra-item-nodes-json> - a project fixture with the P0..P4 and the
 # nocout/cryptoseacurrents options the shipped board carries.
 board_json() {
-  local items=$1
-  jq -n --argjson items "$items" '
+  local items=$1 spool
+  spool=$(mktemp "$TMP_ROOT/items.XXXXXX") || fail "could not spool board items"
+  # Spool through a file: a fleet-scale item list is far past the argv limit.
+  printf '%s' "$items" > "$spool"
+  jq -n --slurpfile spooled "$spool" '$spooled[0] as $items |
     {data:{user:{projectV2:{
       id:"project-1",
       fields:{pageInfo:{hasNextPage:false},nodes:[
@@ -84,6 +87,12 @@ if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
 fi
 if [ "${1:-}" = api ]; then
   [ "${FM_FAKE_GH_MODE:-}" = network ] && exit 1
+  # FM_FAKE_GH_FAIL_AFTER=<n>: the first n api calls succeed, every later one
+  # fails like a dropped connection, so a test can cut a run at an exact point.
+  api_calls=$(grep -c '^api ' "$FM_FAKE_GH_LOG")
+  if [ -n "${FM_FAKE_GH_FAIL_AFTER:-}" ] && [ "$api_calls" -gt "$FM_FAKE_GH_FAIL_AFTER" ]; then
+    exit 1
+  fi
   [ -z "${FM_FAKE_GH_LATENCY:-}" ] || sleep "$FM_FAKE_GH_LATENCY"
   case "$*" in
     *addProjectV2DraftIssue*)
@@ -93,17 +102,25 @@ if [ "${1:-}" = api ]; then
           body=*) draft_body=${arg#body=} ;;
         esac
       done
-      jq --arg title "$draft_title" --arg body "$draft_body" '
+      # The first creation keeps the historical "created-item" id; later ones
+      # on the same board are numbered so every created card stays distinct.
+      created_n=$(( $(jq '[.data.user.projectV2.items.nodes[] | select(.id | startswith("created-item"))] | length' "$FM_FAKE_BOARD_STATE") + 1 ))
+      if [ "$created_n" -le 1 ]; then
+        created_item=created-item; created_draft=created-draft
+      else
+        created_item="created-item-$created_n"; created_draft="created-draft-$created_n"
+      fi
+      jq --arg item "$created_item" --arg draft "$created_draft" --arg title "$draft_title" --arg body "$draft_body" '
         .data.user.projectV2.items.nodes += [{
-          id:"created-item",
-          content:{__typename:"DraftIssue",id:"created-draft",title:$title,body:$body},
+          id:$item,
+          content:{__typename:"DraftIssue",id:$draft,title:$title,body:$body},
           fieldValues:{nodes:[]}
         }]' "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" \
         && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
-      jq -n --arg title "$draft_title" --arg body "$draft_body" '
+      jq -n --arg item "$created_item" --arg draft "$created_draft" --arg title "$draft_title" --arg body "$draft_body" '
         {data:{addProjectV2DraftIssue:{projectItem:{
-          id:"created-item",
-          content:{__typename:"DraftIssue",id:"created-draft",title:$title,body:$body}
+          id:$item,
+          content:{__typename:"DraftIssue",id:$draft,title:$title,body:$body}
         }}}}' ;;
     *updateProjectV2DraftIssue*|*updateProjectV2ItemFieldValue*)
       # One request carries a card's text update and every field write it
@@ -216,6 +233,7 @@ run_sync() {  # <case-dir> <fakebin> [--force]
     FM_FAKE_BOARD_PREWRITE="${FM_FAKE_BOARD_PREWRITE:-}" \
     FM_FAKE_HELM_MUTATION_STALL="${FM_FAKE_HELM_MUTATION_STALL:-}" \
     FM_FAKE_GH_LATENCY="${FM_FAKE_GH_LATENCY:-}" \
+    FM_FAKE_GH_FAIL_AFTER="${FM_FAKE_GH_FAIL_AFTER:-}" \
     PATH="$fb:$PATH" \
     "$SYNC" "${a[@]}"
 }
@@ -730,6 +748,217 @@ mv "$case_dir/board-state.json" "$case_dir/board.json"
 out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post multi-field poll failed: $out"
 [ -z "$out" ] || fail "a multi-field write was read back as a captain edit: $out"
 pass "a card needing text and several field writes converges in one run"
+
+# ---------------------------------------------------------------------------
+# Fleet scale: a 100-row backlog against a 110-card board must finish one run
+# well inside the whole-run deadline, and a run cut off after its first card
+# creation must have recorded that card durably so the next run resumes.
+# The fake gh has no artificial latency: the cost under test is the sync's own
+# local work per row, which is what blew the deadline on the real fleet.
+# ---------------------------------------------------------------------------
+scale_body() {  # <task-id> <Pn> <filed> [note-line...]
+  local id=$1 pn=$2 filed=$3
+  shift 3
+  # shellcheck disable=SC2016 # backticks are card-body literals, not expansions.
+  printf '`%s`\n\n## Facts\n\n- **Repo:** firstmate\n- **Type:** ship - produces a change and a PR\n- **Priority:** %s\n- **Filed:** %s\n\n## Notes\n\n' "$id" "$pn" "$filed"
+  local line
+  for line in "$@"; do printf '%s\n' "$line"; done
+  # shellcheck disable=SC2016 # backticks are card-body literals, not expansions.
+  printf '\n---\n_Source of truth: `data/backlog.md` in the owning firstmate home._'
+}
+
+scale_item() {  # <task-id> <title> <body> <status-name> <status-id> <Pn> <pn-id>
+  jq -n --arg t "$1" --arg ti "$2" --arg body "$3" --arg so "$4" --arg si "$5" --arg pn "$6" --arg pi "$7" '
+    {id:("item-" + $t),content:{__typename:"DraftIssue",id:("draft-" + $t),title:$ti,body:$body},
+     fieldValues:{nodes:[
+       {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Status"},name:$so,optionId:$si},
+       {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Priority"},name:$pn,optionId:$pi},
+       {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Project"},name:"firstmate",optionId:"firstmate-project"},
+       {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Kind"},name:"ship",optionId:"ship-kind"}
+     ]}}'
+}
+
+write_scale_fixtures() {  # <case-dir>
+  local dir=$1 i items
+  {
+    printf '# Backlog\n\n## In flight\n'
+    for i in 1 2 3 4 5; do
+      printf -- '- [ ] scale-flight-%s - Flight task %s (repo: firstmate) (kind: ship) (priority: 1) (since: 2026-09-01)\n' "$i" "$i"
+    done
+    printf '## Queued\n'
+    for i in $(seq 1 85); do
+      printf -- '- [ ] scale-queued-%s - Queued task %s (repo: firstmate) (kind: ship) (priority: 3) (since: 2026-09-02)\n' "$i" "$i"
+      printf '  note for task %s\n' "$i"
+    done
+    printf '## Done\n'
+    for i in $(seq 1 10); do
+      printf -- '- [x] scale-done-%s - Done task %s (repo: firstmate) (kind: ship) (done: 2026-09-10)\n' "$i" "$i"
+    done
+  } > "$dir/home/data/backlog.md"
+  items="$dir/items.jsonl"
+  : > "$items"
+  # 70 queued cards already in step with the backlog.
+  for i in $(seq 1 70); do
+    scale_item "scale-queued-$i" "Queued task $i" "$(scale_body "scale-queued-$i" P3 2026-09-02 "note for task $i")" Queued queued-status P3 p3-priority >> "$items"
+  done
+  # 10 done cards already in step.
+  for i in $(seq 1 10); do
+    scale_item "scale-done-$i" "Done task $i" "$(scale_body "scale-done-$i" P3 2026-09-10)" Done done-status P3 p3-priority >> "$items"
+  done
+  # 5 in-flight tasks whose cards still say Queued: one Status write each.
+  for i in 1 2 3 4 5; do
+    scale_item "scale-flight-$i" "Flight task $i" "$(scale_body "scale-flight-$i" P1 2026-09-01)" Queued queued-status P1 p1-priority >> "$items"
+  done
+  # 5 queued cards whose Priority lags the backlog: one Priority write each.
+  for i in 71 72 73 74 75; do
+    scale_item "scale-queued-$i" "Queued task $i" "$(scale_body "scale-queued-$i" P3 2026-09-02 "note for task $i")" Queued queued-status P4 p4-priority >> "$items"
+  done
+  # Tasks scale-queued-76..85 have no card yet: ten creations.
+  # 10 orphan Done cards (completed tasks pruned from the backlog): untouched.
+  for i in $(seq 1 10); do
+    scale_item "orphan-done-$i" "Orphan done $i" "$(scale_body "orphan-done-$i" P3 2026-08-01)" Done done-status P3 p3-priority >> "$items"
+  done
+  # 10 orphan live cards in no backlog: closed to Done.
+  for i in $(seq 1 10); do
+    scale_item "orphan-live-$i" "Orphan live $i" "$(scale_body "orphan-live-$i" P3 2026-08-01)" Queued queued-status P3 p3-priority >> "$items"
+  done
+  board_json "$(jq -s '.' "$items")" > "$dir/board.json"
+}
+
+case_dir="$TMP_ROOT/fleet-scale"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+write_scale_fixtures "$case_dir"
+[ "$(jq '.data.user.projectV2.items.nodes | length' "$case_dir/board.json")" -eq 110 ] \
+  || fail "scale board fixture is not 110 cards"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+started=$(date +%s)
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "fleet-scale sync exited nonzero: $out"
+elapsed=$(( $(date +%s) - started ))
+assert_contains "$out" "fm-helm-sync: synchronized" "a fleet-scale run did not finish: $out"
+[ "$elapsed" -lt 20 ] || fail "a fleet-scale run took ${elapsed}s, not well under the 25s deadline"
+if printf '%s\n' "$out" | grep -F 'could not' >/dev/null; then
+  fail "a fleet-scale run reported a failed card write: $out"
+fi
+[ "$(grep -c 'addProjectV2DraftIssue' "$case_dir/gh.log")" -eq 10 ] \
+  || fail "a fleet-scale run did not create exactly the ten missing cards: $(grep -c 'addProjectV2DraftIssue' "$case_dir/gh.log")"
+for i in 1 2 3 4 5; do
+  grep -F "itemId=item-scale-flight-$i" "$case_dir/gh.log" | grep -F 'optionId=flight-status' >/dev/null \
+    || fail "in-flight task scale-flight-$i did not reach In flight"
+done
+for i in 71 72 73 74 75; do
+  grep -F "itemId=item-scale-queued-$i" "$case_dir/gh.log" | grep -F 'optionId=p3-priority' >/dev/null \
+    || fail "queued task scale-queued-$i did not get its Priority write"
+done
+for i in $(seq 1 10); do
+  grep -F "itemId=item-orphan-live-$i" "$case_dir/gh.log" | grep -F 'optionId=done-status' >/dev/null \
+    || fail "orphan live card orphan-live-$i was not closed to Done"
+  if grep -F "itemId=item-orphan-done-$i" "$case_dir/gh.log" >/dev/null; then
+    fail "orphan Done card orphan-done-$i was touched"
+  fi
+done
+for i in $(seq 1 70); do
+  if grep -F "itemId=item-scale-queued-$i " "$case_dir/gh.log" >/dev/null; then
+    fail "an in-step card scale-queued-$i was written"
+  fi
+done
+[ "$(wc -l < "$case_dir/home/state/helm-cards.tsv")" -eq 100 ] \
+  || fail "the identity cache does not hold every backlog task: $(wc -l < "$case_dir/home/state/helm-cards.tsv")"
+[ -s "$case_dir/home/state/.helm-sync-backlog.sha256" ] \
+  || fail "a fleet-scale run did not publish the sync debounce state"
+[ -s "$case_dir/home/state/.helm-board-poll" ] \
+  || fail "a fleet-scale run did not publish the board poll signature"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post fleet-scale poll failed: $out"
+[ -z "$out" ] || fail "a fleet-scale run's own writes were read back as a captain edit: $out"
+: > "$case_dir/gh.log"
+out=$(run_sync "$case_dir" "$fb" --force 2>&1) || fail "fleet-scale steady-state run exited nonzero: $out"
+assert_contains "$out" "fm-helm-sync: synchronized" "a steady-state forced run did not finish"
+if grep -F 'query=mutation(' "$case_dir/gh.log" >/dev/null; then
+  fail "a steady-state forced run wrote to the board: $(grep -F 'query=mutation(' "$case_dir/gh.log" | head -3)"
+fi
+[ ! -e "$case_dir/home/state/.wake-queue" ] || [ ! -s "$case_dir/home/state/.wake-queue" ] \
+  || fail "a steady-state forced run raised a wake: $(cat "$case_dir/home/state/.wake-queue")"
+pass "a fleet-scale run finishes well inside the deadline and is idempotent"
+
+# Cut off after the first creation: the created card is already durable and the
+# next run resumes without recreating it.
+case_dir="$TMP_ROOT/resume-after-cutoff"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] cut-a - First card (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] cut-b - Second card (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] cut-c - Third card (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"
+# api call 1 reads the board, call 2 creates cut-a, call 3 (its pre-write read) fails.
+out=$(FM_FAKE_GH_FAIL_AFTER=2 run_sync "$case_dir" "$fb" 2>&1) \
+  || fail "a cut-off run exited nonzero: $out"
+[ "$(grep -c 'addProjectV2DraftIssue' "$case_dir/gh.log")" -ge 1 ] \
+  || fail "the cut-off run never created its first card"
+grep -F $'cut-a\tcreated-item\t' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
+  || fail "the card created before the cut-off is not durably recorded: $(cat "$case_dir/home/state/helm-cards.tsv" 2>&1)"
+assert_contains "$out" "partial: 3 cards remain" "a cut-off run did not report its remaining work: $out"
+[ ! -e "$case_dir/home/state/.helm-sync-backlog.sha256" ] \
+  || fail "a cut-off run advanced the sync debounce state"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "the resume run exited nonzero: $out"
+assert_contains "$out" "fm-helm-sync: synchronized" "the resume run did not finish: $out"
+[ "$(grep -c 'addProjectV2DraftIssue' "$case_dir/gh.log")" -eq 2 ] \
+  || fail "the resume run did not create exactly the two remaining cards: $(grep -c 'addProjectV2DraftIssue' "$case_dir/gh.log")"
+if grep -F 'title=First card' "$case_dir/gh.log" | grep -F 'addProjectV2DraftIssue' >/dev/null; then
+  fail "the resume run recreated the card the cut-off run had already created"
+fi
+grep -F 'itemId=created-item ' "$case_dir/gh.log" | grep -F 'optionId=queued-status' >/dev/null \
+  || fail "the resume run did not finish the first card's field writes"
+[ "$(wc -l < "$case_dir/home/state/helm-cards.tsv")" -eq 3 ] \
+  || fail "the resume run did not record every card: $(cat "$case_dir/home/state/helm-cards.tsv")"
+pass "a run cut off after its first creation resumes from the recorded card"
+
+# Killed mid-write, the way the watcher's check timeout kills a slow run: the
+# creation that already landed stays recorded.
+case_dir="$TMP_ROOT/resume-after-kill"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state" "$case_dir/tmp"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] kill-a - Killed run card (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"
+cp "$case_dir/board.json" "$case_dir/board-state.json"
+# The inner shell reaps the killed run so its "Killed" notice stays out of
+# the suite output.
+TMPDIR="$case_dir/tmp" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  FM_FAKE_BOARD="$case_dir/board.json" FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
+  FM_FAKE_GH_LOG="$case_dir/gh.log" FM_FAKE_TASKS_LOG="$case_dir/tasks-axi.log" \
+  FM_FAKE_HELM_MUTATION_STALL=30 PATH="$fb:$PATH" \
+  bash -c 'timeout -k 1 4 "$1"; exit $?' _ "$SYNC" >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] || fail "the killed run was expected to die under the stalled write"
+grep -F $'kill-a\tcreated-item\t' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
+  || fail "a card created before the kill is not durably recorded: $(cat "$case_dir/home/state/helm-cards.tsv" 2>&1)"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "the post-kill resume run exited nonzero: $out"
+assert_contains "$out" "fm-helm-sync: synchronized" "the post-kill resume run did not finish: $out"
+if grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null; then
+  fail "the post-kill resume run recreated an already created card"
+fi
+pass "a run killed mid-write keeps its created card and resumes cleanly"
 
 case_dir="$TMP_ROOT/bounded-mutation"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"

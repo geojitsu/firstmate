@@ -489,6 +489,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/bugs/2026-09-13-helm-sync-deadline-lost-progress.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/calm-mode-feasibility.md",
       "audience": "maintainer-verification"
     },
