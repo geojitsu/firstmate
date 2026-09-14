@@ -186,7 +186,7 @@ fm_helm_backlog_parse_program() {
            since:metadata_word($m.rest; "since"), merged:metadata_word($m.rest; "merged"),
            reported:metadata_word($m.rest; "reported"), done:metadata_word($m.rest; "done"),
            blocked_by_ids:blocked_by_ids($m.rest),
-           pr_url:(([$m.rest | scan(url_pattern)] | map(select(test("/pull/[0-9]+") or test("/-/merge_requests/[0-9]+") or test("/merge_requests/[0-9]+"))) | .[0]) // null),
+           pr_url:(([$m.rest | scan(url_pattern)] | map(select(test("/pull/[1-9][0-9]*$") or test("/-/merge_requests/[1-9][0-9]*$"))) | .[0]) // null),
            report_path:cap($m.rest; ".*(?<v>data/[^[:space:])]+/report\\.md).*"),
            body_lines:[]}]
      elif ($line | test("^[[:space:]]+")) and (.records | length) > 0 and .records[-1].structured then
