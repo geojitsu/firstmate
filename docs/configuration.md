@@ -144,6 +144,7 @@ An external interruption, including the watcher's check timeout, can end without
 A `--force` run that reaches the partial path leaves `state/.helm-sync-resume` so the next run is forced too, which keeps the captain's board edits on the cards it never reached on the reconciliation path instead of the backlog-wins path.
 
 Field authority: `data/backlog.md` in the owning home is authoritative for a card's title, body, kind, repository, priority, and lifecycle status.
+When a backlog row contains a GitHub `/pull/<positive number>` or GitLab `/-/merge_requests/<positive number>` URL, the card body includes it as a `PR` fact.
 The board is authoritative only for the captain's own edits, only for Priority, Status, and card text, and only on an explicit `bin/fm-helm-sync.sh --force` read.
 On `--force` a captain edit to a card's Priority is written back into the owning backlog row; a move into the dispatch status raises one durable dispatch `check` wake for ordinary firstmate intake; and a move to Done on a live task, a move backwards, a title or body edit, a new captain card, or a deleted card each raise one `check` wake and change no backlog task mechanically.
 The sync compares Status, Priority, title, and body with their own recorded board baselines.

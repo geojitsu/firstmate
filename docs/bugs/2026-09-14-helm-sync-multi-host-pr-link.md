@@ -13,7 +13,7 @@ The backlog parser selected a PR URL only when it matched the GitHub-specific `/
 
 ## Fix
 
-The parser now uses a short explicit allowlist for GitHub `/pull/<number>` and GitLab `/-/merge_requests/<number>` paths. The existing card renderer continues to place a retained link in the Facts section.
+The parser now recognizes the canonical PR and MR URL shapes documented in [Helm board sync configuration](../configuration.md#helm-board-sync-confighelmjson). The existing card renderer continues to place a retained link in the Facts section.
 
 ## Prevention
 

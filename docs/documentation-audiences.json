@@ -493,6 +493,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/bugs/2026-09-14-helm-sync-multi-host-pr-link.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/calm-mode-feasibility.md",
       "audience": "maintainer-verification"
     },
