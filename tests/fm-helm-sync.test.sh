@@ -269,6 +269,53 @@ run_watch() {  # <case-dir> <fakebin>
 }
 
 # ---------------------------------------------------------------------------
+# PR links: card Facts retain canonical GitHub and GitLab link shapes.
+# ---------------------------------------------------------------------------
+case_dir="$TMP_ROOT/pr-link-shapes"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] github-pr-task - GitHub PR task (repo: firstmate) (kind: ship) (since: 2026-09-05) https://github.com/geojitsu/firstmate/pull/123
+- [ ] gitlab-mr-task - GitLab MR task (repo: nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/dc-noc/nocout/-/merge_requests/123
+- [ ] gitlab-bare-mr-task - GitLab bare MR task (repo: nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/dc-noc/nocout/merge_requests/456
+- [ ] gitlab-zero-mr-task - GitLab zero MR task (repo: nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/dc-noc/nocout/-/merge_requests/0
+- [ ] gitlab-suffixed-mr-task - GitLab suffixed MR task (repo: nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/dc-noc/nocout/-/merge_requests/12x
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "PR-link shape sync failed"
+jq -e --arg url 'https://github.com/geojitsu/firstmate/pull/123' '
+  [.data.user.projectV2.items.nodes[].content.body]
+  | any(.[]; contains("- **PR:** " + $url))
+' "$case_dir/board-state.json" >/dev/null \
+  || fail "a GitHub pull-request URL did not render in the Facts section"
+jq -e --arg url 'https://gitlab.com/dc-noc/nocout/-/merge_requests/123' '
+  [.data.user.projectV2.items.nodes[].content.body]
+  | any(.[]; contains("- **PR:** " + $url))
+' "$case_dir/board-state.json" >/dev/null \
+  || fail "a GitLab merge-request URL did not render in the Facts section"
+jq -e --arg url 'https://gitlab.com/dc-noc/nocout/merge_requests/456' '
+  [.data.user.projectV2.items.nodes[].content.body]
+  | all(.[]; contains("- **PR:** " + $url) | not)
+' "$case_dir/board-state.json" >/dev/null \
+  || fail "a bare GitLab merge-request URL rendered in the Facts section"
+jq -e --arg url 'https://gitlab.com/dc-noc/nocout/-/merge_requests/0' '
+  [.data.user.projectV2.items.nodes[].content.body]
+  | all(.[]; contains("- **PR:** " + $url) | not)
+' "$case_dir/board-state.json" >/dev/null \
+  || fail "a zero GitLab merge-request URL rendered in the Facts section"
+jq -e --arg url 'https://gitlab.com/dc-noc/nocout/-/merge_requests/12x' '
+  [.data.user.projectV2.items.nodes[].content.body]
+  | all(.[]; contains("- **PR:** " + $url) | not)
+' "$case_dir/board-state.json" >/dev/null \
+  || fail "a suffixed GitLab merge-request URL rendered in the Facts section"
+pass "canonical GitHub and GitLab PR links render in card Facts"
+
+# ---------------------------------------------------------------------------
 # Two-home union: close-missing only fires for a card in no home's backlog.
 # ---------------------------------------------------------------------------
 case_dir="$TMP_ROOT/union"
