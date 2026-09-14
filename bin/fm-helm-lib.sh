@@ -653,7 +653,7 @@ fm_helm_plan_program() {
     def debounce_unsupported($e):
       if $e.phase != "record" then $e
       elif ($e.note // "") != "" then
-        (repo_of($e.task)) as $fp
+        (repo_of($e.task) | tojson | @base64) as $fp
         | $e + {
             note: (if divergence_matches("unsupported-repo"; $e.task; ""; $fp) then "" else $e.note end),
             divergence_ops: (($e.divergence_ops // []) + [{kind: "unsupported-repo", action: "keep", item: "", fp: $fp}])

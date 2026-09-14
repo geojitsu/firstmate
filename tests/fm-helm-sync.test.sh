@@ -1339,17 +1339,18 @@ cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] debounce-task - Must not disappear (repo: unrecognised-project) (kind: ship) (since: 2026-09-09)
+- [ ] debounce-task - Must not disappear (repo: repo-prefix	repo-suffix) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json '[]' > "$case_dir/board.json"
 : > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
 
 out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "unsupported-repo debounce seed run exited nonzero: $out"
-assert_contains "$out" "unsupported repository unrecognised-project for debounce-task; using other" \
+assert_contains "$out" $'unsupported repository repo-prefix\trepo-suffix for debounce-task; using other' \
   "the first sync of an unsupported repository did not emit its diagnostic"
-grep -Fq $'debounce-task\t\tunrecognised-project' "$case_dir/home/state/.helm-unsupported-repo" \
-  || fail "the durable marker did not record the task's exact repo: value: $(cat "$case_dir/home/state/.helm-unsupported-repo" 2>&1)"
+repo_fp=$(printf '%s' $'repo-prefix\trepo-suffix' | jq -Rsc -r 'tojson | @base64')
+grep -Fq $'debounce-task\t\t'"$repo_fp" "$case_dir/home/state/.helm-unsupported-repo" \
+  || fail "the durable marker did not safely encode the task's repo: value: $(cat "$case_dir/home/state/.helm-unsupported-repo" 2>&1)"
 mv "$case_dir/board-state.json" "$case_dir/board.json"
 pass "an unsupported repository's first sync emits its diagnostic and leaves a durable marker"
 
@@ -1359,7 +1360,7 @@ cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] debounce-task - Must not disappear (repo: unrecognised-project) (kind: ship) (since: 2026-09-09)
+- [ ] debounce-task - Must not disappear (repo: repo-prefix	repo-suffix) (kind: ship) (since: 2026-09-09)
 - [ ] unrelated-task - Elsewhere entirely (repo: firstmate) (kind: ship) (since: 2026-09-10)
 ## Done
 EOF
@@ -1372,14 +1373,19 @@ mv "$case_dir/board-state.json" "$case_dir/board.json"
 pass "an unrelated fleet replan does not re-fire an already-known unsupported-repository note"
 
 # Changing the task's own repo: value is a new fact and must fire again.
-sed 's/repo: unrecognised-project/repo: another-unrecognised-project/' \
-  "$case_dir/home/data/backlog.md" > "$case_dir/home/data/backlog.md.next" \
-  || fail "could not stage the changed repo: value"
-mv "$case_dir/home/data/backlog.md.next" "$case_dir/home/data/backlog.md"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] debounce-task - Must not disappear (repo: another-unrecognised-project) (kind: ship) (since: 2026-09-09)
+- [ ] unrelated-task - Elsewhere entirely (repo: firstmate) (kind: ship) (since: 2026-09-10)
+## Done
+EOF
 out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "changed repo: value run exited nonzero: $out"
 assert_contains "$out" "unsupported repository another-unrecognised-project for debounce-task; using other" \
   "a task's repo: value changing to a new unsupported value did not re-fire the note"
-grep -Fq $'debounce-task\t\tanother-unrecognised-project' "$case_dir/home/state/.helm-unsupported-repo" \
+repo_fp=$(printf '%s' another-unrecognised-project | jq -Rsc -r 'tojson | @base64')
+grep -Fq $'debounce-task\t\t'"$repo_fp" "$case_dir/home/state/.helm-unsupported-repo" \
   || fail "the durable marker did not move to the task's new repo: value"
 pass "a task's repo: value changing to a new unsupported value re-fires the note"
 
