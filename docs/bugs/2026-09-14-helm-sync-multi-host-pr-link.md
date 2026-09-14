@@ -13,7 +13,7 @@ The backlog parser selected a PR URL only when it matched the GitHub-specific `/
 
 ## Fix
 
-The parser now uses a short explicit allowlist for GitHub `/pull/<number>`, GitLab `/-/merge_requests/<number>`, and GitLab `/merge_requests/<number>` paths. The existing card renderer continues to place a retained link in the Facts section.
+The parser now uses a short explicit allowlist for GitHub `/pull/<number>` and GitLab `/-/merge_requests/<number>` paths. The existing card renderer continues to place a retained link in the Facts section.
 
 ## Prevention
 
