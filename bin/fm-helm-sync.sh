@@ -85,6 +85,10 @@
 # State files under `.helm-*` retain an acknowledgement fingerprint for each
 # unresolved field divergence.  The sync removes an acknowledgement after that
 # field no longer diverges, so repeated forced reads do not requeue its wake.
+# The same shape debounces the unsupported-repository fallback note (kind
+# `unsupported-repo`, keyed on task id and the exact `repo:` value): it prints
+# once per task per distinct value instead of on every full replan, and fires
+# again only when that task's `repo:` value actually changes.
 # state/helm-deleted.tsv (mode 0600) retains a captain deletion tombstone while
 # that task remains in any discovered backlog. It suppresses recreation even
 # after the captain resolves the hold by marking the task Done. The tombstone
@@ -125,6 +129,7 @@ DIVERGENCE_FILES=(
   "$STATE_PATH/.helm-conflict-body"
   "$STATE_PATH/.helm-new-card"
   "$STATE_PATH/.helm-card-deleted"
+  "$STATE_PATH/.helm-unsupported-repo"
 )
 CARDS_FILE="$STATE_PATH/helm-cards.tsv"
 DELETED_FILE="$STATE_PATH/helm-deleted.tsv"
@@ -803,6 +808,7 @@ while read_entry; do
       ;;
     record:skip)
       [ -z "$tombstone" ] || printf '%s\n' "$tombstone" >>"$NEW_DELETED"
+      apply_divergence_ops "$divergence_ops" || helm_fail_open "could not update Helm divergence memory"
       continue
       ;;
     record:none|record:create|record:update)
