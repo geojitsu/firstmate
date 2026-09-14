@@ -642,7 +642,27 @@ fm_helm_plan_program() {
               end
           end ]
       end;
-    (record_entries + missing_entries + deleted_entries) as $all
+    # An unsupported-repository note is a known, standing fact about a task,
+    # not a fresh event: debounce it through the same divergence-memory shape
+    # as every other "already told you" marker in this file (kind
+    # "unsupported-repo", keyed on task id and the exact repo: value). A record
+    # entry's own note is silenced once that exact value has already been
+    # acknowledged; it fires again only when the repo: value itself changes,
+    # and the marker is cleared once the task no longer needs it.
+    def repo_of($t): ($record_by_id[$t].repo // "");
+    def debounce_unsupported($e):
+      if $e.phase != "record" then $e
+      elif ($e.note // "") != "" then
+        (repo_of($e.task) | tojson | @base64) as $fp
+        | $e + {
+            note: (if divergence_matches("unsupported-repo"; $e.task; ""; $fp) then "" else $e.note end),
+            divergence_ops: (($e.divergence_ops // []) + [{kind: "unsupported-repo", action: "keep", item: "", fp: $fp}])
+          }
+      elif divergence_for("unsupported-repo"; $e.task) != null then
+        $e + {divergence_ops: (($e.divergence_ops // []) + [{kind: "unsupported-repo", action: "remove", item: "", fp: ""}])}
+      else $e
+      end;
+    (record_entries + missing_entries + deleted_entries | map(debounce_unsupported(.))) as $all
     | ([$all[] | select(.phase == "error")] + [$all[] | select(.phase != "error")])[]
     | entry(.)
 JQ

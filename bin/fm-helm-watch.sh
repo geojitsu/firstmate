@@ -14,6 +14,12 @@
 # The underlying sync is the sole board writer and aggregates every local
 # secondmate backlog, so this main-home check covers their transitions too.
 #
+# A clean run can still print its own informational notes alongside the exact
+# success line: an already-known unsupported-repository fallback, or losing
+# the lock race to a concurrent sync. Neither means the run needs attention,
+# so those exact lines are stripped before the success check below, the same
+# way the three silent shapes are matched by exact text.
+#
 # Usage: bin/fm-helm-watch.sh
 set -u
 
@@ -24,7 +30,11 @@ if ! OUTPUT=$("$SCRIPT_DIR/fm-helm-sync.sh" 2>&1); then
   exit 0
 fi
 
-case "$OUTPUT" in
+SIGNIFICANT=$(printf '%s\n' "$OUTPUT" | grep -v \
+  -e '^fm-helm-sync: unsupported repository .*; using other$' \
+  -e '^fm-helm-sync: another Helm sync is already running$')
+
+case "$SIGNIFICANT" in
   ''|'fm-helm-sync: synchronized') exit 0 ;;
   'fm-helm-sync: partial: '*' cards remain') exit 0 ;;
   *) printf '%s\n' "$OUTPUT" ;;

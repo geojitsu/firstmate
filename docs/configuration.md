@@ -136,6 +136,7 @@ Bootstrap automatically registers `state/helm-sync.check.sh` and `state/helm-boa
 The watcher runs the sync and authenticated board poll at its ordinary check cadence, and the combined backlog hash avoids a GitHub call when no local home changed.
 That one main-home writer covers every discovered local secondmate backlog, so secondmates do not need copied Helm configuration or competing sync processes.
 If a fail-open sync skip would leave a backlog item unsynchronized, its diagnostic becomes a durable watcher `check` wake instead of being silent.
+An unsupported `repo:` value maps to the board's `other` bucket and prints one informational fallback note per task and repository value, but that note does not wake the watcher.
 
 One run reads the board once, parses every backlog once, and computes the whole reconciliation as one plan before it writes anything, so a fleet-sized backlog plans in well under a second and the run's 25-second budget is spent on card writes.
 Every landed card write is recorded in `state/helm-cards.tsv` immediately, so a run stopped by its budget, a failed request, or the watcher's check timeout keeps what it already did.

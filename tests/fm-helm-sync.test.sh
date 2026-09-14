@@ -1322,11 +1322,105 @@ EOF
 board_json '[]' > "$case_dir/board.json"
 : > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
 out=$(run_watch "$case_dir" "$fb") || fail "diagnostic watcher adapter exited nonzero: $out"
-assert_contains "$out" "unsupported repository unrecognised-project for unsupported-task; using other" \
-  "an unsupported backlog project did not emit its fallback diagnostic"
+[ -z "$out" ] || fail "an unsupported repository's own fallback note should not wake the watcher: $out"
 grep -F 'optionId=other-project' "$case_dir/gh.log" >/dev/null \
   || fail "an unsupported backlog project was not synced into the other bucket"
-pass "watcher adapter retains unsupported projects in the other bucket"
+pass "watcher adapter retains unsupported projects in the other bucket without waking on its own note"
+
+# ---------------------------------------------------------------------------
+# Unsupported-repository note: debounced per task per distinct repo: value
+# (durable marker), independent of the whole-fleet replan hash.
+# ---------------------------------------------------------------------------
+case_dir="$TMP_ROOT/unsupported-repo-debounce"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] debounce-task - Must not disappear (repo: repo-prefix	repo-suffix) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "unsupported-repo debounce seed run exited nonzero: $out"
+assert_contains "$out" $'unsupported repository repo-prefix\trepo-suffix for debounce-task; using other' \
+  "the first sync of an unsupported repository did not emit its diagnostic"
+repo_fp=$(printf '%s' $'repo-prefix\trepo-suffix' | jq -Rsc -r 'tojson | @base64')
+grep -Fq $'debounce-task\t\t'"$repo_fp" "$case_dir/home/state/.helm-unsupported-repo" \
+  || fail "the durable marker did not safely encode the task's repo: value: $(cat "$case_dir/home/state/.helm-unsupported-repo" 2>&1)"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+pass "an unsupported repository's first sync emits its diagnostic and leaves a durable marker"
+
+# An unrelated backlog change invalidates the whole-fleet debounce hash and
+# forces a full replan; the already-known unsupported task must stay silent.
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] debounce-task - Must not disappear (repo: repo-prefix	repo-suffix) (kind: ship) (since: 2026-09-09)
+- [ ] unrelated-task - Elsewhere entirely (repo: firstmate) (kind: ship) (since: 2026-09-10)
+## Done
+EOF
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "unrelated-task replan exited nonzero: $out"
+assert_not_contains "$out" "unsupported repository" \
+  "an unrelated fleet replan re-fired an already-known unsupported-repository note: $out"
+grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null \
+  || fail "the unrelated task's own card was not created by the same replan"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+pass "an unrelated fleet replan does not re-fire an already-known unsupported-repository note"
+
+# Changing the task's own repo: value is a new fact and must fire again.
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] debounce-task - Must not disappear (repo: another-unrecognised-project) (kind: ship) (since: 2026-09-09)
+- [ ] unrelated-task - Elsewhere entirely (repo: firstmate) (kind: ship) (since: 2026-09-10)
+## Done
+EOF
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "changed repo: value run exited nonzero: $out"
+assert_contains "$out" "unsupported repository another-unrecognised-project for debounce-task; using other" \
+  "a task's repo: value changing to a new unsupported value did not re-fire the note"
+repo_fp=$(printf '%s' another-unrecognised-project | jq -Rsc -r 'tojson | @base64')
+grep -Fq $'debounce-task\t\t'"$repo_fp" "$case_dir/home/state/.helm-unsupported-repo" \
+  || fail "the durable marker did not move to the task's new repo: value"
+pass "a task's repo: value changing to a new unsupported value re-fires the note"
+
+# ---------------------------------------------------------------------------
+# Losing the lock race is a benign fail-open on its own and must not wake.
+# ---------------------------------------------------------------------------
+case_dir="$TMP_ROOT/watcher-lock-contention"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] lock-task - Reaches the board while another sync holds the lock (repo: firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+out=$(
+  FM_HOME="$case_dir/home"
+  FM_ROOT_OVERRIDE="$ROOT"
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$ROOT/bin/fm-wake-lib.sh"
+  fm_lock_try_acquire "$case_dir/home/state/.helm-sync.lock" || exit 3
+  run_watch "$case_dir" "$fb"
+  status=$?
+  fm_lock_release "$case_dir/home/state/.helm-sync.lock" || true
+  exit "$status"
+)
+rc=$?
+[ "$rc" -ne 3 ] || fail "test setup could not hold the Helm sync lock to simulate contention"
+[ "$rc" -eq 0 ] || fail "watcher adapter exited nonzero during lock contention: $out"
+[ -z "$out" ] || fail "losing the lock race to a concurrent sync should stay silent: $out"
+pass "the watcher stays silent when a run only loses the lock race to a concurrent sync"
 
 for mode in no-config noauth scope network; do
   cd_dir="$TMP_ROOT/fail-$mode"
