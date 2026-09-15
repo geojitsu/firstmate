@@ -1084,6 +1084,47 @@ test_completion_closes_a_scout_with_its_report() {
   pass "completion closes a scout item against its report"
 }
 
+# GitHub- vs GitLab-shaped --pr links exercise fm_backlog_done's PR LINK
+# FALLBACK (bin/fm-backlog-transition-lib.sh header): tasks-axi's own --pr
+# validator only accepts a GitHub-shaped .../pull/<number> URL, so a
+# GitLab-shaped merge-request link must fall back to --note instead of
+# wedging the close. test_recovery_falls_back_to_a_note_for_a_non_github_pr_link
+# below covers the same fallback on the bootstrap replay path.
+test_completion_closes_a_github_shaped_pr_link_via_pr() {
+  local case_dir id out
+  id=atomic-close-github-pr-b6a
+  case_dir=$(make_home close-github-pr)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  write_task_meta "$case_dir" "$id" ship no-mistakes "spawn_gen=spawn-close-github-pr" \
+    "pr=https://github.com/example/repo/pull/42"
+
+  out=$(run_teardown "$case_dir" "$id") || fail "teardown failed: $out"
+  [ "$(row_state "$case_dir" "$id")" = "done" ] \
+    || fail "teardown reported success with the item still $(row_state "$case_dir" "$id")"
+  assert_grep 'https://github.com/example/repo/pull/42' "$(backlog_of "$case_dir")" \
+    "a closed GitHub-shaped PR link was not recorded"
+  pass "completion closes a GitHub-shaped PR link via --pr exactly as before"
+}
+
+test_completion_falls_back_to_a_note_for_a_non_github_pr_link() {
+  local case_dir id out
+  id=atomic-close-gitlab-pr-b6b
+  case_dir=$(make_home close-gitlab-pr)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  write_task_meta "$case_dir" "$id" ship no-mistakes "spawn_gen=spawn-close-gitlab-pr" \
+    "pr=https://gitlab.com/dc-noc/nocout/-/merge_requests/17"
+
+  out=$(run_teardown "$case_dir" "$id") \
+    || fail "teardown did not fall back to --note for a non-GitHub PR link: $out"
+  [ "$(row_state "$case_dir" "$id")" = "done" ] \
+    || fail "teardown reported success with the item still $(row_state "$case_dir" "$id")"
+  assert_grep 'https://gitlab.com/dc-noc/nocout/-/merge_requests/17' "$(backlog_of "$case_dir")" \
+    "a closed GitLab-shaped PR link was dropped by the --note fallback"
+  pass "completion falls back to --note for a PR link tasks-axi's --pr validator rejects"
+}
+
 test_completion_refuses_a_legacy_record_without_an_incarnation() {
   local case_dir id meta out rc=0
   id=atomic-close-legacy-no-incarnation-b7
@@ -1515,6 +1556,33 @@ test_recovery_replays_a_close_an_interrupted_cleanup_left_open() {
   assert_not_contains "$out" "endpoint or local copy may remain" \
     "recovery claimed incomplete cleanup without task metadata"
   pass "session start finishes a close an interrupted cleanup recorded but never landed"
+}
+
+# The bootstrap-replay twin of
+# test_completion_falls_back_to_a_note_for_a_non_github_pr_link: a crash left a
+# non-GitHub-shaped --pr link staged in the pending-close record, so replay
+# must hit fm_backlog_done's same PR LINK FALLBACK rather than wedging forever
+# on tasks-axi's --pr validator (this is the exact shape of the incident that
+# motivated the fallback: a GitLab merge-request link recorded by a teardown
+# that crashed before replaying its close).
+test_recovery_falls_back_to_a_note_for_a_non_github_pr_link() {
+  local case_dir id out
+  id=atomic-heal-gitlab-pr-b9a
+  case_dir=$(make_home heal-gitlab-pr)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-heal-gitlab-pr\narg=--pr\narg=https://gitlab.com/dc-noc/nocout/-/merge_requests/17\n' \
+    "$id" "$(home_of "$case_dir")/data" \
+    > "$(home_of "$case_dir")/state/$id.backlog-close"
+
+  out=$(run_bootstrap "$case_dir")
+  [ "$(row_state "$case_dir" "$id")" = "done" ] \
+    || fail "recovery did not fall back to --note for a non-GitHub PR link: $out"
+  assert_grep 'https://gitlab.com/dc-noc/nocout/-/merge_requests/17' "$(backlog_of "$case_dir")" \
+    "the replayed --note fallback dropped the GitLab merge-request link"
+  assert_absent "$(home_of "$case_dir")/state/$id.backlog-close" \
+    "a replayed --note fallback left its close marker behind"
+  pass "session start falls back to --note when a replayed close's PR link is not GitHub-shaped"
 }
 
 test_recovery_backfills_a_recorded_link_on_an_already_done_item() {
@@ -2335,6 +2403,8 @@ test_dispatch_does_not_resurrect_a_row_closed_after_preflight
 test_dispatch_fails_when_its_row_vanishes_after_preflight
 test_completion_closes_a_local_only_ship_before_reporting_success
 test_completion_closes_a_scout_with_its_report
+test_completion_closes_a_github_shaped_pr_link_via_pr
+test_completion_falls_back_to_a_note_for_a_non_github_pr_link
 test_completion_refuses_a_legacy_record_without_an_incarnation
 test_completion_refuses_ambiguous_incarnation_metadata
 test_completion_records_a_relative_report_for_relocated_data
@@ -2353,6 +2423,7 @@ test_recovery_marks_an_owned_record_in_flight
 test_recovery_rejects_an_internal_worker_record_symlink
 test_recovery_ignores_a_symlinked_worker_record
 test_recovery_replays_a_close_an_interrupted_cleanup_left_open
+test_recovery_falls_back_to_a_note_for_a_non_github_pr_link
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
