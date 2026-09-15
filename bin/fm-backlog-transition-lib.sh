@@ -53,6 +53,15 @@
 # records the deliverable and reopens the row instead of closing it, and never
 # closes a row that reads as an open captain call. An answer that closed the row
 # first simply retires the record.
+#
+# PR LINK FALLBACK. tasks-axi's own `--pr` validator only accepts an http(s)
+# URL ending in `/pull/<number>` (GitHub's shape); a GitLab merge-request link
+# or any other host's PR link fails it with a VALIDATION_ERROR, which would
+# otherwise wedge the close forever, live or on replay, since both share
+# fm_backlog_done. fm_backlog_done detects that specific rejection from
+# tasks-axi's own error text and retries the same link recorded via `--note`
+# instead, so the close still lands; a GitHub-shaped link is unaffected. This
+# is a firstmate-side workaround, not a fix to tasks-axi's own validator.
 
 # Set by fm_backlog_transition_applies for a return-1 exemption.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
@@ -310,10 +319,33 @@ fm_backlog_start() {  # <data-dir> <id>
   fm_backlog_mutate "$1" start "$2"
 }
 
+# tasks-axi's own `--pr` validator only accepts an http(s) URL ending in
+# `/pull/<number>` (GitHub's shape); see this file's header "PR LINK
+# FALLBACK". Detect that specific rejection from the real installed
+# tasks-axi's own error text and exit status, rather than reimplementing its
+# URL-shape rule here: matching the real tool's own words stays correct even
+# if that rule's exact shape changes in a future tasks-axi release, and a
+# wording change here only means the fallback stops firing, never a false
+# fallback masking some other, unrelated failure.
+fm_backlog_pr_link_shape_rejected() {  # <tasks-axi-exit-status> <first-output-line>
+  [ "$1" = 2 ] || return 1
+  case "$2" in
+    *"pr link must be an http(s) pull request URL"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_backlog_done() {  # <data-dir> <id> [flag...]
-  local data=$1 id=$2
+  local data=$1 id=$2 status
   shift 2
   fm_backlog_mutate "$data" "done" "$id" "$@"
+  status=$?
+  if [ "$status" -ne 0 ] && [ "$#" -eq 2 ] && [ "${1-}" = --pr ] \
+     && fm_backlog_pr_link_shape_rejected "$status" "$FM_BACKLOG_TRANSITION_ERROR"; then
+    fm_backlog_mutate "$data" "done" "$id" --note "${2-}"
+    return $?
+  fi
+  return "$status"
 }
 
 # Keep a captain-held row open across the removal of the work record that
