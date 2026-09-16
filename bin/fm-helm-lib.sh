@@ -785,7 +785,7 @@ fm_helm_plan_program() {
       if $tsv_existed != "true" then [] else
       [ $old_rows[] as $o
         | if $o.task == "" or $o.item == "" then empty
-          elif $o.owner != $board_owner or $o.number != $board_number then empty
+          elif $o.owner != $board_owner or ($o.number | tostring) != ($board_number | tostring) then empty
           elif $item_set[$o.item] then empty
           elif $line1_set["`" + $o.task + "`"] then empty
           else
