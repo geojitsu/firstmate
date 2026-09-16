@@ -300,7 +300,7 @@ pass "confirmed moves preserve card history in the resumable ledger"
 case_dir="$TMP_ROOT/future-only-source-sync"
 mkdir -p "$case_dir/plan"
 title_b64=$(printf '%s' 'Alpha task' | base64 | tr -d '\n')
-body_b64=$(printf '%s\n\n%s' '`alpha-task`' 'Body' | base64 | tr -d '\n')
+body_b64=$(printf '%s\n\n%s' "\`alpha-task\`" 'Body' | base64 | tr -d '\n')
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   alpha-task old-item old-draft draft queued-status p3-priority "$title_b64" "$body_b64" 1 fixture-owner 999 \
   >"$case_dir/plan/cards.tsv"

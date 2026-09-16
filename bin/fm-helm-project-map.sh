@@ -335,7 +335,7 @@ move_discover_source_cards() {
   while :; do
     page=$((page + 1))
     [ "$page" -le 50 ] || return 1
-    response=$(gh-axi api graphql --field 'query=query($projectId:ID!,$cursor:String){node(id:$projectId){... on ProjectV2 {items(first:100,after:$cursor){nodes{id content{__typename ... on DraftIssue {id body} ... on Issue {id body}} pageInfo{hasNextPage endCursor}}}}}' --field "projectId=$board_id" --field "cursor=$cursor" 2>/dev/null) || return 1
+    response=$(gh-axi api graphql --field "query=query(\$projectId:ID!,\$cursor:String){node(id:\$projectId){... on ProjectV2 {items(first:100,after:\$cursor){nodes{id content{__typename ... on DraftIssue {id body} ... on Issue {id body}} pageInfo{hasNextPage endCursor}}}}}" --field "projectId=$board_id" --field "cursor=$cursor" 2>/dev/null) || return 1
     printf '%s\n' "$response" | jq -r --argjson wanted "$wanted" '
       .data.node.items as $items
       | $items.nodes[]?
@@ -588,7 +588,9 @@ map_move() {
       END { for (task in found) if (!written[task]) { split(found[task], row, "\t"); print task "\t" row[2] "\t" row[3] "\t" row[4] "\t\t\t\t\t" now "\t" owner "\t" number } }' \
       "$TMP_DIR/source-cards.tsv" "$TMP_DIR/cards.current" >"$TMP_DIR/cards.discovered" \
       || fail "could not stage discovered Helm card identities"
-    chmod 0600 "$TMP_DIR/cards.discovered" && mv -f -- "$TMP_DIR/cards.discovered" "$CARDS_FILE" \
+    chmod 0600 "$TMP_DIR/cards.discovered" \
+      || fail "could not publish discovered Helm card identities"
+    mv -f -- "$TMP_DIR/cards.discovered" "$CARDS_FILE" \
       || fail "could not publish discovered Helm card identities"
   fi
   awk -F '\t' -v ids_file="$ids" -v moves_file="$TMP_DIR/moves.tsv" \
