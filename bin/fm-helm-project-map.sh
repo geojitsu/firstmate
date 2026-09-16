@@ -632,7 +632,6 @@ map_move() {
     printf 'move partial: %s card(s) remain; rerun move or sync to resume.\n' "$remaining"
   fi
   map_release_lock || fail "could not release the Helm routing lock"
-  "$SCRIPT_DIR/fm-helm-sync.sh" || true
 }
 
 map_unlink() {
