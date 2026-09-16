@@ -341,10 +341,15 @@ move_discover_source_cards() {
       | select($wanted | index($task) != null)
       | [$task, .id, .content.id, (if .content.__typename == "Issue" then "issue" else "draft" end)] | @tsv' >>"$output" \
       || return 1
-    [ "$(printf '%s\n' "$response" | jq -r '.data.node.items.pageInfo.hasNextPage // false')" = false ] && return 0
+    [ "$(printf '%s\n' "$response" | jq -r '.data.node.items.pageInfo.hasNextPage // false')" = false ] && break
     cursor=$(printf '%s\n' "$response" | jq -r '.data.node.items.pageInfo.endCursor // empty')
     [ -n "$cursor" ] || return 1
   done
+  if awk -F '\t' '++seen[$1] == 2 { exit 1 }' "$output"; then
+    return 0
+  fi
+  printf 'fm-helm-project-map: duplicate source cards found; resolve them before moving\n' >&2
+  return 1
 }
 
 # move_card_read_source <source-item-id> reads the current source content

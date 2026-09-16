@@ -178,7 +178,14 @@ fi
 if [ "\${1:-}" = api ]; then
   case "\$*" in
     *'items(first:100,after:\$cursor)'* )
-      jq -n '{data:{node:{items:{nodes:[{id:"old-item",content:{__typename:"DraftIssue",id:"old-draft",body:"\`alpha-task\`\\n\\nCaptain body"}}],pageInfo:{hasNextPage:false,endCursor:null}}}}}' ;;
+      if [ -n "\${FM_HELM_DUPLICATE_SOURCE:-}" ]; then
+        jq -n '{data:{node:{items:{nodes:[
+          {id:"old-item",content:{__typename:"DraftIssue",id:"old-draft",body:"\`alpha-task\`\\n\\nCaptain body"}},
+          {id:"duplicate-item",content:{__typename:"DraftIssue",id:"duplicate-draft",body:"\`alpha-task\`\\n\\nDuplicate body"}}
+        ],pageInfo:{hasNextPage:false,endCursor:null}}}}}'
+      else
+        jq -n '{data:{node:{items:{nodes:[{id:"old-item",content:{__typename:"DraftIssue",id:"old-draft",body:"\`alpha-task\`\\n\\nCaptain body"}}],pageInfo:{hasNextPage:false,endCursor:null}}}}}'
+      fi ;;
     *'itemId=old-item'* )
       jq -n '{data:{node:{content:{__typename:"DraftIssue",title:"Captain-edited Alpha",body:"\`alpha-task\`\\n\\nCaptain body"},fieldValues:{nodes:[
         {name:"Queued",optionId:"queued-status",field:{name:"Status"}},
@@ -306,6 +313,28 @@ grep -F $'alpha-task\tfixture-owner\t999\told-item\tfixture-org\t998\tmoved-item
 grep -F $'alpha-task\told-item\told-draft\tdraft' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
   || fail "cacheless move did not rebuild the source card identity"
 pass "cacheless moves discover live source cards"
+
+case_dir="$TMP_ROOT/cacheless-duplicate-move"
+seed_home "$case_dir"
+write_empty_board "$case_dir/board.json"
+jq -n '{version:1,projects:{alpha:{owner:"fixture-owner",number:999,title:"Alpha",state:"active",linked_at:"2026-09-10T00:00:00Z",move:null,orphan_hold_task:null}},nudges:{}}' \
+  >"$case_dir/home/data/helm-project-map.json"
+fb=$(install_gh_axi "$case_dir" no)
+assert_fake_tools "$fb"
+mkdir -p "$case_dir/gh-config"
+if FM_HELM_DUPLICATE_SOURCE=1 FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 FM_HELM_BOARD_JSON="$case_dir/board.json" PATH="$fb:$PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  "$MAP" move alpha --existing fixture-org/998 --yes >/dev/null 2>&1; then
+  fail "cacheless duplicate source move unexpectedly succeeded"
+fi
+jq -e '.projects.alpha.state == "active" and .projects.alpha.number == 999' \
+  "$case_dir/home/data/helm-project-map.json" >/dev/null \
+  || fail "duplicate source move changed the routing mapping"
+[ ! -e "$case_dir/home/state/helm-cards.tsv" ] \
+  || fail "duplicate source move rebuilt a partial card cache"
+[ ! -e "$case_dir/home/state/helm-moves.tsv" ] \
+  || fail "duplicate source move published a partial move ledger"
+pass "cacheless moves reject duplicate source cards"
 
 # Linking a second project onto a board another project already linked must
 # add the missing Project option, not refuse the board as "incomplete"
