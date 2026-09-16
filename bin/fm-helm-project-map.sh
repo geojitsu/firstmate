@@ -427,6 +427,7 @@ move_execute() {
       *$'\n'"$task"$'\n'*) ;;
       *)
         [ "$phase" = complete ] || printf 'fm-helm-project-map: %s is no longer in the backlog; re-add it or manually clean up state/helm-moves.tsv before resuming its move\n' "$task" >&2
+        [ "$phase" = complete ] || remaining=$((remaining + 1))
         continue
         ;;
     esac
@@ -605,7 +606,7 @@ map_unlink() {
   prior=$(jq -c --arg p "$project" 'if .retention.project == $p then .retention else .projects[$p] // null end' "$TMP_DIR/map.json")
   prior_owner=$(printf '%s\n' "$prior" | jq -r '.owner // empty')
   prior_number=$(printf '%s\n' "$prior" | jq -r '.number // empty')
-  jq --arg p "$project" --arg owner "$prior_owner" --argjson number "${prior_number:-0}" '.projects |= del(.[$p]) | .nudges |= del(.[$p]) | if $owner != "" and $number > 0 then .retention = {project:$p,owner:$owner,number:$number} else . end' "$TMP_DIR/map.json" >"$TMP_DIR/map.next" \
+  jq --arg p "$project" --arg owner "$prior_owner" --argjson number "${prior_number:-0}" --arg default_owner "$DEFAULT_OWNER" --argjson default_number "$DEFAULT_NUMBER" '.projects |= del(.[$p]) | .nudges |= del(.[$p]) | if $owner != "" and $number > 0 and ($owner != $default_owner or $number != $default_number) then .retention = {project:$p,owner:$owner,number:$number} else . end' "$TMP_DIR/map.json" >"$TMP_DIR/map.next" \
     || fail "could not prepare the unlink"
   mv -f -- "$TMP_DIR/map.next" "$TMP_DIR/map.json"
   map_publish || fail "could not publish data/helm-project-map.json"

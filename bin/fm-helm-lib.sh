@@ -730,7 +730,7 @@ fm_helm_plan_program() {
                      (if $title_write then $dt elif $title_conflict then $bt elif $rebuilt or $ct == $dt or ($title_board_changed | not) then $dt else $bt end) + "\t" +
                      (if $body_write then $db elif $body_conflict then $bb elif $rebuilt or $cb == $db or ($body_board_changed | not) then $db else $bb end) + "\t" + $now + "\t" + $board_owner + "\t" + ($board_number | tostring)) as $cache
                   | {phase: "record",
-                     action: (if $retain then "none" elif $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
+                     action: (if $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
                      task: $r.id, item: $card.id, cache: $cache, draft: $text.draft,
                      title: (if $title_write then $d.title else $card_title end), body: (if $body_write then $d.body else $card_body end), fields: $writes,
                      wakes: ($text.wakes + $disp.wakes + $st.wakes

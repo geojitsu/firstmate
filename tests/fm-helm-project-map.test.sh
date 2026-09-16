@@ -324,7 +324,7 @@ jq -n '{data:{user:{projectV2:{fields:{nodes:[
 FM_ROOT_OVERRIDE="$ROOT" bash -c '
   . "$1"
   jq -j --slurpfile desired "$2" --rawfile cards "$3" --rawfile deleted "$4" --rawfile markers "$5" --rawfile divergences "$6" --rawfile fps "$7" \
-    --arg force 0 --arg dispatch_status "In flight" --arg now 2 --arg tsv_existed true --arg retain_source 0 --arg retain_project "" \
+    --arg force 0 --arg dispatch_status "In flight" --arg now 2 --arg tsv_existed true --arg retain_source 1 --arg retain_project alpha \
     --arg board_owner fixture-owner --argjson board_number 999 --arg default_owner fixture-owner --argjson default_number 999 \
     "$(fm_helm_plan_program)" "$8"
 ' _ "$LIB" "$case_dir/plan/desired.json" "$case_dir/plan/cards.tsv" "$case_dir/plan/deleted.tsv" "$case_dir/plan/markers.tsv" "$case_dir/plan/divergences.tsv" "$case_dir/plan/fps.tsv" "$case_dir/plan/board.json" >"$case_dir/plan/output.nul" \
@@ -332,6 +332,27 @@ FM_ROOT_OVERRIDE="$ROOT" bash -c '
 [ "$(tr '\0' '\n' <"$case_dir/plan/output.nul" | sed -n '2p')" = update ] \
   || fail "future-only routing suppressed an existing source card update"
 pass "future-only routing keeps existing source cards synchronized"
+
+case_dir="$TMP_ROOT/removed-move-task"
+seed_home "$case_dir"
+write_empty_board "$case_dir/board.json"
+printf '%s\n' '# Backlog' '' '## In flight' '## Queued' '## Done' >"$case_dir/home/data/backlog.md"
+jq -n '{version:1,projects:{alpha:{owner:"fixture-org",number:998,title:"Alpha",state:"migrating",move:{from:{owner:"fixture-owner",number:999},to:{owner:"fixture-org",number:998},confirmed:true}}},nudges:{}}' \
+  >"$case_dir/home/data/helm-project-map.json"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t\tpending\t1\n' \
+  alpha-task fixture-owner 999 old-item fixture-org 998 >"$case_dir/home/state/helm-moves.tsv"
+fb=$(install_gh_axi "$case_dir" no)
+assert_fake_tools "$fb"
+mkdir -p "$case_dir/gh-config"
+FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 FM_HELM_BOARD_JSON="$case_dir/board.json" PATH="$fb:$PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  "$MAP" move alpha --yes >"$case_dir/output" 2>&1 \
+  || fail "resuming a removed move task exited nonzero"
+grep -F 're-add it or manually clean up state/helm-moves.tsv' "$case_dir/output" >/dev/null \
+  || fail "removed move task did not explain the recovery options"
+jq -e '.projects.alpha.state == "migrating"' "$case_dir/home/data/helm-project-map.json" >/dev/null \
+  || fail "removed move task incorrectly completed the migration"
+pass "removed move tasks remain resumable"
 
 # A rebuilt cache must not make a confirmed move overlook source-board cards.
 case_dir="$TMP_ROOT/cacheless-move"
@@ -470,6 +491,22 @@ FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
 jq -e '.retention == null' "$case_dir/home/data/helm-project-map.json" >/dev/null \
   || fail "a no-op link left pending retention"
 pass "linking a second project onto an already-linked board provisions its option instead of refusing"
+
+case_dir="$TMP_ROOT/noop-unlink"
+seed_home "$case_dir"
+write_empty_board "$case_dir/board.json"
+jq -n '{version:1,projects:{alpha:{owner:"fixture-owner",number:999,title:"Default",state:"active",move:null}},nudges:{}}' \
+  >"$case_dir/home/data/helm-project-map.json"
+fb=$(install_gh_axi "$case_dir" no)
+assert_fake_tools "$fb"
+mkdir -p "$case_dir/gh-config"
+FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 FM_HELM_BOARD_JSON="$case_dir/board.json" PATH="$fb:$PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  "$MAP" unlink alpha >/dev/null 2>&1 \
+  || fail "unlinking a default-board mapping exited nonzero"
+jq -e '.projects.alpha == null and .retention == null' "$case_dir/home/data/helm-project-map.json" >/dev/null \
+  || fail "a no-op unlink left pending retention"
+pass "unlinking a default-board mapping leaves no retention"
 
 # Reconciliation covers two sides of a broken mapping through the existing
 # captain-hold path: a board that disappeared and a local project that left the
