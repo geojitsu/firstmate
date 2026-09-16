@@ -152,7 +152,7 @@ else
     live_count=$(gh-axi project item-list "$DEFAULT_NUMBER" --owner "$DEFAULT_OWNER" --query "Project:$project" --limit 1000 2>/dev/null \
       | awk '/^[[:space:]]+[A-Za-z0-9_]+,/{n++} END{print n+0}')
     old_enough=0
-    added=$(grep -F -- "- $project " "$FM_HOME_PATH/data/projects.md" 2>/dev/null | sed -n 's/.*(added \([0-9-]*\)).*/\1/p' | head -1)
+    added=$(fm_helm_project_added_date "$project" "${HOME_PATHS[@]}")
     if [ -n "$added" ] && added_epoch=$(date -d "$added" +%s 2>/dev/null); then
       [ $((NOW - added_epoch)) -ge 2592000 ] && old_enough=1
     fi

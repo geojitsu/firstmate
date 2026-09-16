@@ -240,6 +240,16 @@ DISPATCH_STATUS=$(printf '%s\n' "$CONFIG_JSON" | jq -r '.dispatch_status // "In 
   || helm_fail_open "config/helm.json is not valid JSON"
 [ -n "$DISPATCH_STATUS" ] || helm_fail_open "config/helm.json has an empty dispatch_status"
 
+RETAIN_OWNER=
+RETAIN_NUMBER=
+RETAIN_PROJECT=${FM_HELM_RETAIN_PROJECT:-}
+case "${FM_HELM_RETAIN_BOARD:-}" in
+  */*) RETAIN_OWNER=${FM_HELM_RETAIN_BOARD%/*}; RETAIN_NUMBER=${FM_HELM_RETAIN_BOARD##*/} ;;
+esac
+case "$RETAIN_OWNER/$RETAIN_NUMBER" in
+  /*|*//*|*/|*' '*|*/*[!0-9]*) RETAIN_OWNER=; RETAIN_NUMBER=; RETAIN_PROJECT= ;;
+esac
+
 if [ -f "$ROUTING_FILE" ]; then
   jq -e '.version == 1 and ((.projects // {}) | type == "object") and ((.nudges // {}) | type == "object")' \
     "$ROUTING_FILE" >/dev/null 2>&1 \
@@ -952,11 +962,12 @@ process_board() {
   fi
   DISPATCH_OPTION_ID=$(option_id Status "$DISPATCH_STATUS")
   group_desired="$TMP_DIR/desired-$BOARD_INDEX.json"
-  jq --arg owner "$owner" --argjson number "$number" --rawfile cards "$OLD_CARDS" \
+  jq --arg owner "$owner" --argjson number "$number" --arg retain_owner "$RETAIN_OWNER" --argjson retain_number "${RETAIN_NUMBER:-0}" --arg retain_project "$RETAIN_PROJECT" --rawfile cards "$CACHE_WORK" \
     '($cards | split("\n") | map(select(. != "") | split("\t"))
       | map(select(length >= 11 and .[9] == $owner and (.[10] | tonumber) == $number) | .[0])) as $historical
      | map(. as $record
            | select(($record.desired.board.owner == $owner and $record.desired.board.number == $number)
+                   or ($retain_owner == $owner and $retain_number == $number and $record.desired.project == $retain_project)
                    or (($historical | index($record.id)) != null)))' \
     "$DESIRED_JSON" >"$group_desired" \
     || helm_fail_open "could not group desired Helm cards"
@@ -1011,11 +1022,11 @@ process_board() {
   fi
   PLAN="$TMP_DIR/plan-$BOARD_INDEX.nul"
   jq -j --slurpfile desired "$group_desired" \
-    --rawfile cards "$OLD_CARDS" --rawfile deleted "$OLD_DELETED" --rawfile markers "$OLD_MARKERS" \
+    --rawfile cards "$CACHE_WORK" --rawfile deleted "$OLD_DELETED" --rawfile markers "$OLD_MARKERS" \
     --rawfile divergences "$OLD_DIVERGENCES" \
     --rawfile fps "$FPS" \
     --arg force "$FORCE" --arg dispatch_status "$DISPATCH_STATUS" --arg now "$NOW_EPOCH" \
-    --arg tsv_existed "$TSV_EXISTED" --arg board_owner "$owner" --argjson board_number "$number" \
+    --arg tsv_existed "$TSV_EXISTED" --arg retain_source "$( [ "$owner" = "$RETAIN_OWNER" ] && [ "$number" = "$RETAIN_NUMBER" ] && printf 1 || printf 0 )" --arg board_owner "$owner" --argjson board_number "$number" \
     --arg default_owner "$OWNER" --argjson default_number "$PROJECT_NUMBER" \
     "$(fm_helm_plan_program)" "$BOARD_JSON" >"$PLAN" \
     || { board_failure "$key" "could not plan the board reconciliation"; publish_progress || helm_fail_open "could not publish Helm board acknowledgement"; return 0; }
@@ -1180,6 +1191,9 @@ fi
 BOARD_KEYS_RAW="$TMP_DIR/board-keys.raw"
 BOARD_KEYS_FILE="$TMP_DIR/board-keys.tsv"
 {
+  if [ -n "$RETAIN_OWNER" ]; then
+    printf '%s\t%s\n' "$RETAIN_OWNER" "$RETAIN_NUMBER"
+  fi
   printf '%s\t%s\n' "$OWNER" "$PROJECT_NUMBER"
   jq -r '.[] | [.desired.board.owner, (.desired.board.number | tostring)] | @tsv' "$DESIRED_JSON"
   awk -F '\t' -v owner="$OWNER" -v number="$PROJECT_NUMBER" \
@@ -1187,8 +1201,9 @@ BOARD_KEYS_FILE="$TMP_DIR/board-keys.tsv"
 } | awk -F '\t' '!seen[$1 SUBSEP $2]++' >"$BOARD_KEYS_RAW" \
   || helm_fail_open "could not build the Helm board groups"
 {
-  awk -F '\t' -v owner="$OWNER" -v number="$PROJECT_NUMBER" '$1 == owner && $2 == number' "$BOARD_KEYS_RAW"
-  awk -F '\t' -v owner="$OWNER" -v number="$PROJECT_NUMBER" '$1 != owner || $2 != number' "$BOARD_KEYS_RAW" \
+  awk -F '\t' -v owner="$RETAIN_OWNER" -v number="$RETAIN_NUMBER" '$1 == owner && $2 == number' "$BOARD_KEYS_RAW"
+  awk -F '\t' -v owner="$RETAIN_OWNER" -v number="$RETAIN_NUMBER" -v default_owner="$OWNER" -v default_number="$PROJECT_NUMBER" '$1 == default_owner && $2 == default_number && !($1 == owner && $2 == number)' "$BOARD_KEYS_RAW"
+  awk -F '\t' -v owner="$RETAIN_OWNER" -v number="$RETAIN_NUMBER" -v default_owner="$OWNER" -v default_number="$PROJECT_NUMBER" '!($1 == owner && $2 == number) && !($1 == default_owner && $2 == default_number) { print }' "$BOARD_KEYS_RAW" \
     | sort -t $'\t' -k1,1 -k2,2n
 } >"$BOARD_KEYS_FILE" || helm_fail_open "could not order the Helm board groups"
 BOARD_COUNT=$(wc -l <"$BOARD_KEYS_FILE")

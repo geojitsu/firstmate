@@ -138,6 +138,15 @@ fm_helm_project_names() {
   done | awk '!seen[$0]++'
 }
 
+fm_helm_project_added_date() {
+  local project=$1 home
+  shift
+  for home in "$@"; do
+    [ -f "$home/data/projects.md" ] && [ ! -L "$home/data/projects.md" ] || continue
+    awk -v p="$project" '$1 == "-" && $2 == p && match($0, /\(added [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)/) { print substr($0, RSTART + 7, 10); exit }' "$home/data/projects.md"
+  done | head -1
+}
+
 # fm_helm_ensure_field_options <run-fn> <project-id> <field-name> <required-csv>
 #
 # Ensures GitHub Project <project-id>'s single-select field <field-name> has
@@ -431,11 +440,11 @@ fm_helm_desired_program() {
       elif ($registered | index($base)) != null then $base
       elif $r == "other" then "other"
       else null end;
-  def board_of($routing; $default_owner; $default_number):
+  def board_of($routing; $registered; $default_owner; $default_number):
     (.repo // "") as $r
     | ($r | if contains("/") then split("/") | .[-1] else . end) as $base
     | ($routing[0].projects // {}) as $projects
-    | ([$projects | to_entries[] | select(.key == $r or .key == $base)][0].value // null) as $entry
+    | ([$projects | to_entries[] | select((.key == $r or .key == $base) and (.key as $key | ($registered | index($key) != null)))][0].value // null) as $entry
     | if $entry != null
          and (($entry.state // "active") == "active" or ($entry.state // "") == "migrating")
          and (($entry.owner // "") | type) == "string"
@@ -472,7 +481,7 @@ fm_helm_desired_program() {
     kind_of as $kind
     | ((.priority // "3") | priority_name) as $priority
     | project_of($registered) as $project
-    | board_of($routing; $default_owner; $default_number) as $board
+    | board_of($routing; $registered; $default_owner; $default_number) as $board
     | .id as $id
     | (if (.report_path // "") != "" then .report_path
        elif any($report_ids[]; . == $id) then "data/" + $id + "/report.md"
@@ -589,7 +598,9 @@ fm_helm_plan_program() {
           elif ($matches | length) > 1 then
             {phase: "error", action: ("duplicate Helm cards for " + $r.id)}
           elif ($matches | length) == 0 then
-            if $deleted_by_task[$r.id] != null then
+            if $retain_source == "1" then
+              {phase: "record", action: "skip", task: $r.id, note: $d.note}
+            elif $deleted_by_task[$r.id] != null then
               {phase: "record", action: "skip", task: $r.id, tombstone: $deleted_by_task[$r.id].line, note: $d.note}
             elif $old != null and $old.item != "" and (($old.owner != $board_owner) or ($old.number != $board_number)) then
               {phase: "record", action: "none", task: $r.id, cache: old_cache($old), note: $d.note}
@@ -718,7 +729,7 @@ fm_helm_plan_program() {
                      (if $title_write then $dt elif $title_conflict then $bt elif $rebuilt or $ct == $dt or ($title_board_changed | not) then $dt else $bt end) + "\t" +
                      (if $body_write then $db elif $body_conflict then $bb elif $rebuilt or $cb == $db or ($body_board_changed | not) then $db else $bb end) + "\t" + $now + "\t" + $board_owner + "\t" + ($board_number | tostring)) as $cache
                   | {phase: "record",
-                     action: (if $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
+                     action: (if $retain_source == "1" then "none" elif $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
                      task: $r.id, item: $card.id, cache: $cache, draft: $text.draft,
                      title: (if $title_write then $d.title else $card_title end), body: (if $body_write then $d.body else $card_body end), fields: $writes,
                      wakes: ($text.wakes + $disp.wakes + $st.wakes

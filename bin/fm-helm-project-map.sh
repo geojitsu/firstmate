@@ -216,7 +216,7 @@ ensure_schema() {
 }
 
 map_link() {
-  local project=$1 title=${2:-} owner=$DEFAULT_OWNER existing='' now
+  local project=$1 title=${2:-} owner=$DEFAULT_OWNER existing='' now prior prior_owner prior_number
   [ -n "$project" ] || fail "link requires a local project name"
   project_registered "$project" || fail "local project '$project' is not registered in data/projects.md"
   [ -n "$title" ] || title="$project"
@@ -229,6 +229,9 @@ map_link() {
     esac
     shift
   done
+  prior=$(map_entry "$project")
+  prior_owner=$(printf '%s\n' "$prior" | jq -r '.owner // empty')
+  prior_number=$(printf '%s\n' "$prior" | jq -r '.number // empty')
   PROJECT_SCHEMA_OPTION=$project
   create_or_reuse_board "$owner" "$title" "$existing"
   ensure_schema
@@ -242,7 +245,11 @@ map_link() {
   printf 'linked: %s -> %s/%s "%s"\n' "$project" "$BOARD_OWNER" "$BOARD_NUMBER" "$BOARD_TITLE"
   printf 'link changes future cards only; use move %s --existing %s/%s --yes to relocate existing cards.\n' \
     "$project" "$BOARD_OWNER" "$BOARD_NUMBER"
-  "$SCRIPT_DIR/fm-helm-sync.sh" || true
+  if [ -n "$prior_owner" ] && [ -n "$prior_number" ] && [ "$prior_owner/$prior_number" != "$BOARD_OWNER/$BOARD_NUMBER" ]; then
+    FM_HELM_RETAIN_BOARD="$prior_owner/$prior_number" FM_HELM_RETAIN_PROJECT="$project" "$SCRIPT_DIR/fm-helm-sync.sh" || true
+  else
+    "$SCRIPT_DIR/fm-helm-sync.sh" || true
+  fi
 }
 
 backlog_task_ids() {  # <project> <output-file>
@@ -450,6 +457,8 @@ map_move() {
     if [ -n "$default_dest" ]; then
       BOARD_OWNER=$DEFAULT_OWNER; BOARD_NUMBER=$DEFAULT_NUMBER
       board_view "$BOARD_OWNER" "$BOARD_NUMBER" || fail "default Helm Project $BOARD_OWNER/$BOARD_NUMBER does not resolve"
+      PROJECT_SCHEMA_OPTION=$project
+      ensure_schema
     else
       [ -n "$title" ] || title="$project"
       PROJECT_SCHEMA_OPTION=$project
@@ -511,15 +520,22 @@ map_move() {
 }
 
 map_unlink() {
-  local project=$1
+  local project=$1 prior prior_owner prior_number
   map_load
+  prior=$(map_entry "$project")
+  prior_owner=$(printf '%s\n' "$prior" | jq -r '.owner // empty')
+  prior_number=$(printf '%s\n' "$prior" | jq -r '.number // empty')
   jq --arg p "$project" '.projects |= del(.[$p]) | .nudges |= del(.[$p])' "$TMP_DIR/map.json" >"$TMP_DIR/map.next" \
     || fail "could not prepare the unlink"
   mv -f -- "$TMP_DIR/map.next" "$TMP_DIR/map.json"
   map_publish || fail "could not publish data/helm-project-map.json"
   printf 'unlinked: %s -> default Helm board %s/%s\n' "$project" "$DEFAULT_OWNER" "$DEFAULT_NUMBER"
   printf 'unlink changes future cards only; use move %s --default --yes to relocate existing cards.\n' "$project"
-  "$SCRIPT_DIR/fm-helm-sync.sh" || true
+  if [ -n "$prior_owner" ] && [ -n "$prior_number" ] && [ "$prior_owner/$prior_number" != "$DEFAULT_OWNER/$DEFAULT_NUMBER" ]; then
+    FM_HELM_RETAIN_BOARD="$prior_owner/$prior_number" FM_HELM_RETAIN_PROJECT="$project" "$SCRIPT_DIR/fm-helm-sync.sh" || true
+  else
+    "$SCRIPT_DIR/fm-helm-sync.sh" || true
+  fi
 }
 
 map_list() {
