@@ -18,10 +18,15 @@ STATE_PATH="${FM_STATE_OVERRIDE:-$FM_HOME_PATH/state}"
 CONFIG_FILE="$CONFIG_PATH/helm.json"
 MAP_FILE="$DATA_PATH/helm-project-map.json"
 LAST_FILE="$STATE_PATH/.helm-reconcile-last"
+LOCK_FILE="$STATE_PATH/.helm-sync.lock"
 TMP_DIR=
+LOCK_HELD=0
 
 reconcile_cleanup() {
   local status=$?
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$LOCK_FILE" 2>/dev/null || true
+  fi
   [ -z "$TMP_DIR" ] || [ ! -d "$TMP_DIR" ] || rm -rf -- "$TMP_DIR"
   exit "$status"
 }
@@ -73,6 +78,8 @@ if [ "$FORCE" -eq 0 ] && [ -f "$LAST_FILE" ] && [ ! -L "$LAST_FILE" ]; then
 fi
 
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-helm-reconcile.XXXXXX") || fail "could not create temporary workspace"
+fm_lock_try_acquire "$LOCK_FILE" || fail "another Helm sync or map operation is already running"
+LOCK_HELD=1
 if [ -f "$MAP_FILE" ]; then
   [ ! -L "$MAP_FILE" ] || fail "refusing symlinked Helm routing state"
   jq -e '.version == 1 and ((.projects // {}) | type == "object") and ((.nudges // {}) | type == "object")' \
@@ -170,6 +177,8 @@ fi
 if [ "$MAP_DIRTY" -ne 0 ] && ! publish_map; then
   fail "could not publish Helm reconciliation state"
 fi
+fm_lock_release "$LOCK_FILE" || fail "could not release the Helm routing lock"
+LOCK_HELD=0
 
 # A confirmed migration is an already-approved operation. Continue it without
 # asking for a second confirmation, then let the ordinary sync reconcile item

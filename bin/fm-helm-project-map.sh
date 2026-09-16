@@ -104,6 +104,12 @@ map_publish() {
   chmod 0600 "$tmp" && mv -f -- "$tmp" "$MAP_FILE"
 }
 
+map_release_lock() {
+  [ "$LOCK_HELD" -eq 1 ] || return 0
+  fm_lock_release "$LOCK_FILE" || return 1
+  LOCK_HELD=0
+}
+
 project_registered() {
   local project=$1
   fm_helm_project_names "${HOME_PATHS[@]}" | awk -v p="$project" '$0 == p { found=1 } END { exit(found ? 0 : 1) }'
@@ -245,6 +251,7 @@ map_link() {
   printf 'linked: %s -> %s/%s "%s"\n' "$project" "$BOARD_OWNER" "$BOARD_NUMBER" "$BOARD_TITLE"
   printf 'link changes future cards only; use move %s --existing %s/%s --yes to relocate existing cards.\n' \
     "$project" "$BOARD_OWNER" "$BOARD_NUMBER"
+  map_release_lock || fail "could not release the Helm routing lock"
   if [ -n "$prior_owner" ] && [ -n "$prior_number" ] && [ "$prior_owner/$prior_number" != "$BOARD_OWNER/$BOARD_NUMBER" ]; then
     FM_HELM_RETAIN_BOARD="$prior_owner/$prior_number" FM_HELM_RETAIN_PROJECT="$project" "$SCRIPT_DIR/fm-helm-sync.sh" || true
   else
@@ -493,10 +500,6 @@ map_move() {
     printf 're-run with --yes to execute.\n'
     exit 0
   fi
-  if ! fm_lock_try_acquire "$LOCK_FILE"; then
-    fail "another Helm sync or move is already running"
-  fi
-  LOCK_HELD=1
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   jq --arg p "$project" --arg owner "$BOARD_OWNER" --argjson number "$BOARD_NUMBER" \
     --arg from_owner "$source_owner" --argjson from_number "$source_number" --arg now "$now" \
@@ -516,8 +519,7 @@ map_move() {
   else
     printf 'move partial: %s card(s) remain; rerun move or sync to resume.\n' "$remaining"
   fi
-  fm_lock_release "$LOCK_FILE" || fail "could not release the Helm move lock"
-  LOCK_HELD=0
+  map_release_lock || fail "could not release the Helm routing lock"
   "$SCRIPT_DIR/fm-helm-sync.sh" || true
 }
 
@@ -533,6 +535,7 @@ map_unlink() {
   map_publish || fail "could not publish data/helm-project-map.json"
   printf 'unlinked: %s -> default Helm board %s/%s\n' "$project" "$DEFAULT_OWNER" "$DEFAULT_NUMBER"
   printf 'unlink changes future cards only; use move %s --default --yes to relocate existing cards.\n' "$project"
+  map_release_lock || fail "could not release the Helm routing lock"
   if [ -n "$prior_owner" ] && [ -n "$prior_number" ] && [ "$prior_owner/$prior_number" != "$DEFAULT_OWNER/$DEFAULT_NUMBER" ]; then
     FM_HELM_RETAIN_BOARD="$prior_owner/$prior_number" FM_HELM_RETAIN_PROJECT="$project" "$SCRIPT_DIR/fm-helm-sync.sh" || true
   else
@@ -591,6 +594,8 @@ case "$command" in
     [ "$#" -gt 0 ] || fail "link requires a local project name"
     project=$1; shift; title=
     case "${1:-}" in --*) ;; '') ;; *) title=$1; shift ;; esac
+    fm_lock_try_acquire "$LOCK_FILE" || fail "another Helm sync or map operation is already running"
+    LOCK_HELD=1
     map_load
     map_link "$project" "$title" "$@"
     ;;
@@ -598,10 +603,14 @@ case "$command" in
     [ "$#" -gt 0 ] || fail "move requires a local project name"
     project=$1; shift; title=
     case "${1:-}" in --*) ;; '') ;; *) title=$1; shift ;; esac
+    fm_lock_try_acquire "$LOCK_FILE" || fail "another Helm sync or map operation is already running"
+    LOCK_HELD=1
     map_move "$project" "$title" "$@"
     ;;
   unlink)
     [ "$#" -eq 1 ] || fail "unlink requires exactly one local project name"
+    fm_lock_try_acquire "$LOCK_FILE" || fail "another Helm sync or map operation is already running"
+    LOCK_HELD=1
     map_unlink "$1"
     ;;
   sync) [ "$#" -eq 0 ] || fail "sync takes no arguments"; map_sync ;;
