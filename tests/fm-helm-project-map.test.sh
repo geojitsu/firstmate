@@ -469,6 +469,46 @@ grep -F $'\tstale-org\t5' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
   && fail "the stale board identity was left behind alongside the discovered row"
 pass "cacheless move discovery overwrites a stale cache row instead of duplicating it"
 
+# A task already cached on the destination board (e.g. a newer card the
+# just-updated mapping routed straight there) must never be picked as the
+# move's source just because its row happens to sort first in the cache.
+case_dir="$TMP_ROOT/move-source-skips-destination-rows"
+seed_home "$case_dir"
+cat >"$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+## Queued
+- [ ] alpha-anchor - Alpha anchor (repo: alpha) (kind: ship) (since: 2026-09-10)
+- [ ] alpha-task - Alpha task (repo: alpha) (kind: ship) (since: 2026-09-10)
+## Done
+EOF
+write_empty_board "$case_dir/board.json"
+jq -n '{version:1,projects:{alpha:{owner:"fixture-org",number:998,title:"Alpha",state:"active",linked_at:"2026-09-10T00:00:00Z",move:null,orphan_hold_task:null}},nudges:{}}' \
+  >"$case_dir/home/data/helm-project-map.json"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  alpha-anchor dest-item dest-draft draft queued-status p3-priority "$title_b64" "$body_b64" 1 fixture-org 998 \
+  >"$case_dir/home/state/helm-cards.tsv"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  alpha-task old-item old-draft draft queued-status p3-priority "$title_b64" "$body_b64" 1 fixture-owner 999 \
+  >>"$case_dir/home/state/helm-cards.tsv"
+fb=$(install_gh_axi "$case_dir" no)
+assert_fake_tools "$fb"
+mkdir -p "$case_dir/gh-config"
+FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 FM_HELM_BOARD_JSON="$case_dir/board.json" PATH="$fb:$PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  "$MAP" move alpha --existing fixture-org/998 --yes >"$case_dir/output" 2>&1 \
+  || fail "move exited nonzero when an unmigrated card still needed to move: $(cat "$case_dir/output")"
+grep -qF 'source and destination boards are the same' "$case_dir/output" \
+  && fail "move mistook a card already on the destination board for the source"
+grep -F 'item-delete 999 --owner fixture-owner --id old-item' "$case_dir/gh-axi.log" >/dev/null \
+  || fail "move did not relocate the still-unmigrated card off its real source board"
+grep -F $'alpha-anchor\tdest-item\tdest-draft' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
+  || fail "the already-migrated card was disturbed even though it was not part of this move"
+[ "$(awk -F '\t' '$1 == "alpha-anchor"' "$case_dir/home/state/helm-cards.tsv" | wc -l)" -eq 1 ] \
+  || fail "the already-migrated card's cache row was duplicated"
+pass "move source detection skips cache rows already on the destination board"
+
 # Linking a second project onto a board another project already linked must
 # add the missing Project option, not refuse the board as "incomplete"
 # (spec decision 6: several mapping entries sharing one board is normal).

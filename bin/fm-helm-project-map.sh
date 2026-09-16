@@ -480,7 +480,7 @@ move_execute() {
 }
 
 map_move() {
-  local project=$1 title=${2:-} owner=$DEFAULT_OWNER existing='' default_dest='' yes=0 entry source_owner source_number count now ids
+  local project=$1 title=${2:-} owner=$DEFAULT_OWNER existing='' default_dest='' yes=0 entry source_owner source_number count now ids exclude_owner exclude_number
   [ -n "$project" ] || fail "move requires a local project name"
   entry=$(map_entry "$project")
   if [ "$(printf '%s\n' "$entry" | jq -r '.state // empty')" = migrating ]; then
@@ -514,12 +514,24 @@ map_move() {
     # A just-completed link/unlink already points the routing entry at the
     # destination; the project's cards are still sitting wherever the cache
     # last indexed them, so that identity (not the entry) is the real source.
+    # Exclude rows already on the known destination so a task that already
+    # landed there (e.g. a newer card routed by the just-updated mapping)
+    # cannot be mistaken for the still-unmigrated source board.
+    exclude_owner=
+    exclude_number=
+    if [ -n "$default_dest" ]; then
+      exclude_owner=$DEFAULT_OWNER
+      exclude_number=$DEFAULT_NUMBER
+    elif [ -n "$existing" ] && parse_board_ref "$existing"; then
+      exclude_owner=$BOARD_OWNER
+      exclude_number=$BOARD_NUMBER
+    fi
     source_owner=
     source_number=
     if [ -f "$CARDS_FILE" ] && [ -s "$ids" ]; then
-      IFS=$'\t' read -r source_owner source_number < <(awk -F '\t' -v ids_file="$ids" '
+      IFS=$'\t' read -r source_owner source_number < <(awk -F '\t' -v ids_file="$ids" -v ex_owner="$exclude_owner" -v ex_number="$exclude_number" '
         FILENAME == ids_file { wanted[$1] = 1; next }
-        NF >= 11 && wanted[$1] && $10 != "" && $11 != "" { print $10 "\t" $11; exit }' "$ids" "$CARDS_FILE")
+        NF >= 11 && wanted[$1] && $10 != "" && $11 != "" && !($10 == ex_owner && $11 == ex_number) { print $10 "\t" $11; exit }' "$ids" "$CARDS_FILE")
     fi
     if [ -z "$source_owner" ] || [ -z "$source_number" ]; then
       source_owner=$(printf '%s\n' "$entry" | jq -r '.owner // empty')
