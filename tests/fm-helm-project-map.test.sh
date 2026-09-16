@@ -396,6 +396,79 @@ jq -e '.projects.alpha.state == "active" and .projects.alpha.number == 999' \
   || fail "duplicate source move published a partial move ledger"
 pass "cacheless moves reject duplicate source cards"
 
+# After link/unlink, the routing entry already points at the destination
+# board while the existing card is still cached on the prior board. move must
+# resolve its source from that cached identity, not the now-overwritten entry
+# (otherwise source == destination and move always refuses to run).
+case_dir="$TMP_ROOT/move-after-link"
+seed_home "$case_dir"
+write_empty_board "$case_dir/board.json"
+jq -n '{version:1,projects:{alpha:{owner:"fixture-org",number:998,title:"Alpha",state:"active",linked_at:"2026-09-10T00:00:00Z",move:null,orphan_hold_task:null}},nudges:{}}' \
+  >"$case_dir/home/data/helm-project-map.json"
+title_b64=$(printf '%s' 'Alpha task' | base64 | tr -d '\n')
+# shellcheck disable=SC2016 # backticks are card-body literals, not expansions.
+body_b64=$(printf '%s' '`alpha-task`\n\nBody' | base64 | tr -d '\n')
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  alpha-task old-item old-draft draft queued-status p3-priority "$title_b64" "$body_b64" 1 fixture-owner 999 \
+  >"$case_dir/home/state/helm-cards.tsv"
+fb=$(install_gh_axi "$case_dir" no)
+assert_fake_tools "$fb"
+mkdir -p "$case_dir/gh-config"
+FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 FM_HELM_BOARD_JSON="$case_dir/board.json" PATH="$fb:$PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  "$MAP" move alpha --existing fixture-org/998 --yes >"$case_dir/output" 2>&1 \
+  || fail "move after link exited nonzero: $(cat "$case_dir/output")"
+grep -qF 'source and destination boards are the same' "$case_dir/output" \
+  && fail "move after link still resolved its source from the overwritten routing entry"
+grep -F 'item-delete 999 --owner fixture-owner --id old-item' "$case_dir/gh-axi.log" >/dev/null \
+  || fail "move after link did not delete the card from the prior cached board"
+jq -e '.projects.alpha.state == "active" and .projects.alpha.owner == "fixture-org" and .projects.alpha.number == 998' \
+  "$case_dir/home/data/helm-project-map.json" >/dev/null \
+  || fail "move after link left the routing mapping incomplete"
+grep -F $'alpha-task\tmoved-item\told-draft' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
+  || fail "move after link did not update the cache to the destination item"
+pass "move resolves its source from the cached card identity after link overwrites the entry"
+
+# A stale cache row for a task pointing at a board other than the move's
+# source must be overwritten by live discovery, not duplicated into a second
+# row for the same task id. A second, correctly-cached anchor task keeps
+# source-board resolution pinned to fixture-owner/999 so the stale row is
+# exercised through discovery rather than mistaken for the source itself.
+case_dir="$TMP_ROOT/cacheless-move-stale-identity"
+seed_home "$case_dir"
+cat >"$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+## Queued
+- [ ] alpha-task - Alpha task (repo: alpha) (kind: ship) (since: 2026-09-10)
+- [ ] alpha-anchor - Alpha anchor (repo: alpha) (kind: ship) (since: 2026-09-10)
+## Done
+EOF
+write_empty_board "$case_dir/board.json"
+jq -n '{version:1,projects:{alpha:{owner:"fixture-owner",number:999,title:"Alpha",state:"active",linked_at:"2026-09-10T00:00:00Z",move:null,orphan_hold_task:null}},nudges:{}}' \
+  >"$case_dir/home/data/helm-project-map.json"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  alpha-anchor anchor-item anchor-draft draft queued-status p3-priority "$title_b64" "$body_b64" 1 fixture-owner 999 \
+  >"$case_dir/home/state/helm-cards.tsv"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  alpha-task stale-item stale-draft draft queued-status p3-priority "$title_b64" "$body_b64" 1 stale-org 5 \
+  >>"$case_dir/home/state/helm-cards.tsv"
+fb=$(install_gh_axi "$case_dir" no)
+assert_fake_tools "$fb"
+mkdir -p "$case_dir/gh-config"
+FM_HELM_FAIL_DELETE=1 FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 FM_HELM_BOARD_JSON="$case_dir/board.json" PATH="$fb:$PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  "$MAP" move alpha --existing fixture-org/998 --yes >/dev/null 2>&1 \
+  || fail "cacheless move with a stale identity exited nonzero"
+[ "$(awk -F '\t' '$1 == "alpha-task"' "$case_dir/home/state/helm-cards.tsv" | wc -l)" -eq 1 ] \
+  || fail "a stale cache row was duplicated instead of overwritten by live discovery"
+grep -F $'alpha-task\told-item\told-draft\tdraft' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
+  || fail "the discovered source card did not replace the stale cache row"
+grep -F $'\tstale-org\t5' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
+  && fail "the stale board identity was left behind alongside the discovered row"
+pass "cacheless move discovery overwrites a stale cache row instead of duplicating it"
+
 # Linking a second project onto a board another project already linked must
 # add the missing Project option, not refuse the board as "incomplete"
 # (spec decision 6: several mapping entries sharing one board is normal).
