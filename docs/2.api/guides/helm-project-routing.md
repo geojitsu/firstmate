@@ -8,8 +8,8 @@ tags: ['helm', 'setup']
 ## Overview
 
 Helm routing is opt-in. Configure a default board, register local projects in
-`data/projects.md`, and use the mapping command when a project needs a separate
-board or should share another board intentionally.
+their local home's `data/projects.md`, and use the mapping command when a
+project needs a separate board or should share another board intentionally.
 
 ## Usage
 
@@ -30,9 +30,9 @@ bin/fm-helm-project-map.sh move firetabs --existing geojitsu/5 --yes
 
 ### `data/helm-project-map.json`
 
-Version 1 stores `owner`, `number`, `title`, `url`, `state`, `linked_at`,
-`move`, and `orphan_hold_task` for each project, plus nudge cooldowns under
-`nudges`. The file is main-home-only and mode `0600`.
+Version 1 uses a `projects` object keyed by registered project name, plus nudge
+cooldowns under `nudges`. Project entries are `active` or `migrating`. The file
+is main-home-only and mode `0600`.
 
 ## Notes
 

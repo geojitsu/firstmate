@@ -130,7 +130,7 @@ The accepted configuration fields are `owner`, `number`, optional `dispatch_stat
 The configured GitHub account needs the `project` scope, which provides the project read and write access used by the sync.
 An absent `config/helm.json` makes the script exit 0 without reading any backlog or contacting GitHub.
 
-The sync discovers every local secondmate home from `data/secondmates.md` and reconciles the union of every home's `data/backlog.md` against grouped boards. A project named in `data/projects.md` can route its cards to its mapped `owner`/`number`; unmapped projects use the configured default board. Multiple projects may intentionally share one mapped board.
+The sync discovers every local secondmate home from `data/secondmates.md` and reconciles the union of every home's `data/backlog.md` against grouped boards. A project registered in a local home's `data/projects.md` can route its cards to its mapped `owner`/`number`; unmapped projects use the configured default board. Multiple projects may intentionally share one mapped board.
 Remote secondmate homes are not handled yet; see the "Remote homes" note in `bin/fm-helm-lib.sh`.
 Bootstrap automatically registers `state/helm-sync.check.sh`, `state/helm-board.check.sh`, and `state/helm-reconcile.check.sh` with the main home's watcher while this configuration exists.
 The watcher runs the sync and authenticated board poll at its ordinary check cadence, and the combined backlog hash avoids a GitHub call when no local home changed.
@@ -161,11 +161,11 @@ The sync records each request and unresolved field divergence with durable marke
 The sync rebuilds the cache silently from the board when absent, and the `bin/fm-helm-sync.sh` header owns its row format and the per-card publication rule.
 
 `data/helm-project-map.json` is the optional main-home routing map. Its
-version-1 `projects` entries use the exact local project name as the key and
-contain `owner`, `number`, `title`, `url`, `state`, `linked_at`, `move`, and
-`orphan_hold_task`; an absent entry means the configured default board. The
-`nudges` object remembers the once-per-30-days suggestion for an unlinked
-project. The file is mode `0600` and is included in the sync debounce hash.
+version-1 `projects` entries use the exact registered project name as the key.
+An entry records its board identity and may be `active` or `migrating`; an
+absent entry means the configured default board. The `nudges` object remembers
+the once-per-30-days suggestion for an unlinked project. The file is mode
+`0600` and is included in the sync debounce hash.
 
 Use `bin/fm-helm-project-map.sh list [--counts]` to inspect routing,
 `link <project> [<title>] [--owner <login>] [--existing <owner>/<number>]` to
