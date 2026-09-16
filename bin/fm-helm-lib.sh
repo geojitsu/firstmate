@@ -606,7 +606,7 @@ fm_helm_plan_program() {
               {phase: "record", action: "skip", task: $r.id, note: $d.note}
             elif $deleted_by_task[$r.id] != null then
               {phase: "record", action: "skip", task: $r.id, tombstone: $deleted_by_task[$r.id].line, note: $d.note}
-            elif $old != null and $old.item != "" and (($old.owner != $board_owner) or ($old.number != $board_number)) then
+            elif $old != null and $old.item != "" and (($old.owner != $board_owner) or (($old.number | tostring) != ($board_number | tostring))) then
               {phase: "record", action: "none", task: $r.id, cache: old_cache($old), note: $d.note}
             elif $old != null and $r.state != "done" and $old.item != "" and ($item_set[$old.item] | not) then
               {phase: "record", action: "skip", task: $r.id, note: $d.note}
