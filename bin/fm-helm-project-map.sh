@@ -110,6 +110,12 @@ map_release_lock() {
   LOCK_HELD=0
 }
 
+require_no_pending_retention() {
+  local project
+  project=$(jq -r '.retention.project // empty' "$TMP_DIR/map.json")
+  [ -z "$project" ] || fail "a prior remap for '$project' is awaiting sync; wait for it to complete first"
+}
+
 project_registered() {
   local project=$1
   fm_helm_project_names "${HOME_PATHS[@]}" | awk -v p="$project" '$0 == p { found=1 } END { exit(found ? 0 : 1) }'
@@ -327,7 +333,7 @@ move_card_read_source() {
   MOVE_SOURCE_TITLE=$(jq -r '.data.node.content.title // empty' <<<"$source_json")
   MOVE_SOURCE_BODY=$(jq -r '.data.node.content.body // empty' <<<"$source_json")
   [ "$MOVE_SOURCE_TYPE" = DraftIssue ] || [ "$MOVE_SOURCE_TYPE" = Issue ] || return 1
-  [ -n "$MOVE_SOURCE_TITLE" ] && [ -n "$MOVE_SOURCE_BODY" ]
+  [ -n "$MOVE_SOURCE_TITLE" ]
 }
 
 # move_card_copy_fields <source-item-id> <destination-item-id> copies the
@@ -435,7 +441,6 @@ move_execute() {
 map_move() {
   local project=$1 title=${2:-} owner=$DEFAULT_OWNER existing='' default_dest='' yes=0 entry source_owner source_number count now ids
   [ -n "$project" ] || fail "move requires a local project name"
-  map_load
   entry=$(map_entry "$project")
   if [ "$(printf '%s\n' "$entry" | jq -r '.state // empty')" = migrating ]; then
     destination_owner=$(printf '%s\n' "$entry" | jq -r '.owner')
@@ -525,7 +530,6 @@ map_move() {
 
 map_unlink() {
   local project=$1 prior prior_owner prior_number
-  map_load
   prior=$(jq -c --arg p "$project" 'if .retention.project == $p then .retention else .projects[$p] // null end' "$TMP_DIR/map.json")
   prior_owner=$(printf '%s\n' "$prior" | jq -r '.owner // empty')
   prior_number=$(printf '%s\n' "$prior" | jq -r '.number // empty')
@@ -597,6 +601,7 @@ case "$command" in
     fm_lock_try_acquire "$LOCK_FILE" || fail "another Helm sync or map operation is already running"
     LOCK_HELD=1
     map_load
+    require_no_pending_retention
     map_link "$project" "$title" "$@"
     ;;
   move)
@@ -605,12 +610,16 @@ case "$command" in
     case "${1:-}" in --*) ;; '') ;; *) title=$1; shift ;; esac
     fm_lock_try_acquire "$LOCK_FILE" || fail "another Helm sync or map operation is already running"
     LOCK_HELD=1
+    map_load
+    require_no_pending_retention
     map_move "$project" "$title" "$@"
     ;;
   unlink)
     [ "$#" -eq 1 ] || fail "unlink requires exactly one local project name"
     fm_lock_try_acquire "$LOCK_FILE" || fail "another Helm sync or map operation is already running"
     LOCK_HELD=1
+    map_load
+    require_no_pending_retention
     map_unlink "$1"
     ;;
   sync) [ "$#" -eq 0 ] || fail "sync takes no arguments"; map_sync ;;
