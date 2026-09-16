@@ -1026,7 +1026,7 @@ process_board() {
     --rawfile divergences "$OLD_DIVERGENCES" \
     --rawfile fps "$FPS" \
     --arg force "$FORCE" --arg dispatch_status "$DISPATCH_STATUS" --arg now "$NOW_EPOCH" \
-    --arg tsv_existed "$TSV_EXISTED" --arg retain_source "$( [ "$owner" = "$RETAIN_OWNER" ] && [ "$number" = "$RETAIN_NUMBER" ] && printf 1 || printf 0 )" --arg board_owner "$owner" --argjson board_number "$number" \
+    --arg tsv_existed "$TSV_EXISTED" --arg retain_source "$( [ "$owner" = "$RETAIN_OWNER" ] && [ "$number" = "$RETAIN_NUMBER" ] && printf 1 || printf 0 )" --arg retain_project "$RETAIN_PROJECT" --arg board_owner "$owner" --argjson board_number "$number" \
     --arg default_owner "$OWNER" --argjson default_number "$PROJECT_NUMBER" \
     "$(fm_helm_plan_program)" "$BOARD_JSON" >"$PLAN" \
     || { board_failure "$key" "could not plan the board reconciliation"; publish_progress || helm_fail_open "could not publish Helm board acknowledgement"; return 0; }

@@ -586,6 +586,7 @@ fm_helm_plan_program() {
   | def record_entries:
       [ $records[] as $r
         | $r.desired as $d
+        | ($retain_source == "1" and $d.project == $retain_project) as $retain
         | ($by_line1["`" + $r.id + "`"] // []) as $matches
         | ($fp_by_task[$r.id].fp // "") as $fp
         | $old_by_task[$r.id] as $old
@@ -598,7 +599,7 @@ fm_helm_plan_program() {
           elif ($matches | length) > 1 then
             {phase: "error", action: ("duplicate Helm cards for " + $r.id)}
           elif ($matches | length) == 0 then
-            if $retain_source == "1" then
+            if $retain then
               {phase: "record", action: "skip", task: $r.id, note: $d.note}
             elif $deleted_by_task[$r.id] != null then
               {phase: "record", action: "skip", task: $r.id, tombstone: $deleted_by_task[$r.id].line, note: $d.note}
@@ -729,7 +730,7 @@ fm_helm_plan_program() {
                      (if $title_write then $dt elif $title_conflict then $bt elif $rebuilt or $ct == $dt or ($title_board_changed | not) then $dt else $bt end) + "\t" +
                      (if $body_write then $db elif $body_conflict then $bb elif $rebuilt or $cb == $db or ($body_board_changed | not) then $db else $bb end) + "\t" + $now + "\t" + $board_owner + "\t" + ($board_number | tostring)) as $cache
                   | {phase: "record",
-                     action: (if $retain_source == "1" then "none" elif $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
+                     action: (if $retain then "none" elif $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
                      task: $r.id, item: $card.id, cache: $cache, draft: $text.draft,
                      title: (if $title_write then $d.title else $card_title end), body: (if $body_write then $d.body else $card_body end), fields: $writes,
                      wakes: ($text.wakes + $disp.wakes + $st.wakes
@@ -785,6 +786,7 @@ fm_helm_plan_program() {
       if $tsv_existed != "true" then [] else
       [ $old_rows[] as $o
         | if $o.task == "" or $o.item == "" then empty
+          elif $o.owner != $board_owner or $o.number != $board_number then empty
           elif $item_set[$o.item] then empty
           elif $line1_set["`" + $o.task + "`"] then empty
           else
