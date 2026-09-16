@@ -320,6 +320,33 @@ move_card_delete() {  # <owner> <number> <item-id>
   gh-axi project item-delete "$2" --owner "$1" --id "$3" >/dev/null 2>&1
 }
 
+move_discover_source_cards() {
+  local owner=$1 number=$2 ids=$3 output=$4 board_output board_id cursor='' page=0 response wanted
+  board_output=$(gh-axi project view "$number" --owner "$owner" 2>/dev/null) || return 1
+  board_id=$(printf '%s\n' "$board_output" | sed -n 's/^id: //p' | head -1)
+  [ -n "$board_id" ] || return 1
+  wanted=$(jq -Rsc 'split("\n") | map(select(length > 0))' "$ids") || return 1
+  : >"$output"
+  while :; do
+    page=$((page + 1))
+    [ "$page" -le 50 ] || return 1
+    response=$(gh-axi api graphql --field 'query=query($projectId:ID!,$cursor:String){node(id:$projectId){... on ProjectV2 {items(first:100,after:$cursor){nodes{id content{__typename ... on DraftIssue {id body} ... on Issue {id body}} pageInfo{hasNextPage endCursor}}}}}' --field "projectId=$board_id" --field "cursor=$cursor" 2>/dev/null) || return 1
+    printf '%s\n' "$response" | jq -r --argjson wanted "$wanted" '
+      .data.node.items as $items
+      | $items.nodes[]?
+      | select(.content.__typename == "DraftIssue" or .content.__typename == "Issue")
+      | (.content.body // "" | split("\n")[0]) as $marker
+      | select($marker | test("^`[A-Za-z0-9._-]+`$"))
+      | ($marker[1:-1]) as $task
+      | select($wanted | index($task) != null)
+      | [$task, .id, .content.id, (if .content.__typename == "Issue" then "issue" else "draft" end)] | @tsv' >>"$output" \
+      || return 1
+    [ "$(printf '%s\n' "$response" | jq -r '.data.node.items.pageInfo.hasNextPage // false')" = false ] && return 0
+    cursor=$(printf '%s\n' "$response" | jq -r '.data.node.items.pageInfo.endCursor // empty')
+    [ -n "$cursor" ] || return 1
+  done
+}
+
 # move_card_read_source <source-item-id> reads the current source content
 # before a draft move. The identity cache is a routing index, not a board
 # snapshot, so captain edits must travel with the card when it is relocated.
@@ -486,6 +513,43 @@ map_move() {
   MOVE_TASKS=$(cat -- "$ids")
   : >"$TMP_DIR/moves.tsv"
   [ -f "$MOVES_FILE" ] && [ ! -L "$MOVES_FILE" ] && cp -- "$MOVES_FILE" "$TMP_DIR/moves.tsv"
+  if [ -f "$CARDS_FILE" ]; then
+    awk -F '\t' -v ids_file="$ids" -v owner="$source_owner" -v number="$source_number" '
+      FILENAME == ids_file { wanted[$1]=1; next }
+      NF >= 11 && $10 == owner && $11 == number { indexed[$1]=1 }
+      END { for (task in wanted) if (!indexed[task]) print task }' \
+      "$ids" "$CARDS_FILE" >"$TMP_DIR/unindexed-task-ids" \
+      || fail "could not inspect cached Helm card identities"
+  else
+    cp -- "$ids" "$TMP_DIR/unindexed-task-ids"
+  fi
+  if [ -s "$TMP_DIR/unindexed-task-ids" ]; then
+    move_discover_source_cards "$source_owner" "$source_number" "$TMP_DIR/unindexed-task-ids" "$TMP_DIR/source-cards.tsv" \
+      || fail "could not inspect source Helm cards for the move"
+  else
+    : >"$TMP_DIR/source-cards.tsv"
+  fi
+  if [ -s "$TMP_DIR/source-cards.tsv" ]; then
+    if [ -f "$CARDS_FILE" ]; then
+      cp -- "$CARDS_FILE" "$TMP_DIR/cards.current"
+    else
+      : >"$TMP_DIR/cards.current"
+    fi
+    awk -F '\t' -v discovered="$TMP_DIR/source-cards.tsv" -v owner="$source_owner" -v number="$source_number" -v now="$(date +%s)" '
+      FILENAME == discovered { found[$1]=$0; next }
+      {
+        if ($1 in found && $10 == owner && $11 == number) {
+          split(found[$1], row, "\t")
+          print $1 "\t" row[2] "\t" row[3] "\t" row[4] "\t\t\t\t\t" now "\t" owner "\t" number
+          written[$1]=1
+        } else print
+      }
+      END { for (task in found) if (!written[task]) { split(found[task], row, "\t"); print task "\t" row[2] "\t" row[3] "\t" row[4] "\t\t\t\t\t" now "\t" owner "\t" number } }' \
+      "$TMP_DIR/source-cards.tsv" "$TMP_DIR/cards.current" >"$TMP_DIR/cards.discovered" \
+      || fail "could not stage discovered Helm card identities"
+    chmod 0600 "$TMP_DIR/cards.discovered" && mv -f -- "$TMP_DIR/cards.discovered" "$CARDS_FILE" \
+      || fail "could not publish discovered Helm card identities"
+  fi
   awk -F '\t' -v ids_file="$ids" -v moves_file="$TMP_DIR/moves.tsv" \
     -v owner="$source_owner" -v number="$source_number" \
     -v dest_owner="$BOARD_OWNER" -v dest_number="$BOARD_NUMBER" -v epoch="$(date +%s)" \

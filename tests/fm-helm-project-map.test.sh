@@ -177,6 +177,8 @@ if [ "\${1:-}" = project ] && [ "\${2:-}" = item-delete ]; then
 fi
 if [ "\${1:-}" = api ]; then
   case "\$*" in
+    *'items(first:100,after:\$cursor)'* )
+      jq -n '{data:{node:{items:{nodes:[{id:"old-item",content:{__typename:"DraftIssue",id:"old-draft",body:"\`alpha-task\`\\n\\nCaptain body"}}],pageInfo:{hasNextPage:false,endCursor:null}}}}}' ;;
     *'itemId=old-item'* )
       jq -n '{data:{node:{content:{__typename:"DraftIssue",title:"Captain-edited Alpha",body:"\`alpha-task\`\\n\\nCaptain body"},fieldValues:{nodes:[
         {name:"Queued",optionId:"queued-status",field:{name:"Status"}},
@@ -284,6 +286,26 @@ grep -F $'alpha-task\tfixture-owner\t999\told-item\tfixture-org\t998\tmoved-item
   "$case_dir/home/state/helm-moves.tsv" >/dev/null \
   || fail "move ledger did not retain its complete add/delete history"
 pass "confirmed moves preserve card history in the resumable ledger"
+
+# A rebuilt cache must not make a confirmed move overlook source-board cards.
+case_dir="$TMP_ROOT/cacheless-move"
+seed_home "$case_dir"
+write_empty_board "$case_dir/board.json"
+jq -n '{version:1,projects:{alpha:{owner:"fixture-owner",number:999,title:"Alpha",state:"active",linked_at:"2026-09-10T00:00:00Z",move:null,orphan_hold_task:null}},nudges:{}}' \
+  >"$case_dir/home/data/helm-project-map.json"
+fb=$(install_gh_axi "$case_dir" no)
+assert_fake_tools "$fb"
+mkdir -p "$case_dir/gh-config"
+FM_HELM_FAIL_DELETE=1 FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 FM_HELM_BOARD_JSON="$case_dir/board.json" PATH="$fb:$PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  "$MAP" move alpha --existing fixture-org/998 --yes >/dev/null 2>&1 \
+  || fail "cacheless confirmed move exited nonzero"
+grep -F $'alpha-task\tfixture-owner\t999\told-item\tfixture-org\t998\tmoved-item\tdest-ready' \
+  "$case_dir/home/state/helm-moves.tsv" >/dev/null \
+  || fail "cacheless move did not discover and stage the source card"
+grep -F $'alpha-task\told-item\told-draft\tdraft' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
+  || fail "cacheless move did not rebuild the source card identity"
+pass "cacheless moves discover live source cards"
 
 # Linking a second project onto a board another project already linked must
 # add the missing Project option, not refuse the board as "incomplete"
