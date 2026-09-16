@@ -575,9 +575,9 @@ map_move() {
     exit 0
   fi
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  jq --arg p "$project" --arg owner "$BOARD_OWNER" --argjson number "$BOARD_NUMBER" \
+  jq --arg p "$project" --arg owner "$BOARD_OWNER" --argjson number "$BOARD_NUMBER" --arg title "$BOARD_TITLE" --arg url "$BOARD_URL" \
     --arg from_owner "$source_owner" --argjson from_number "$source_number" --arg now "$now" \
-    '.projects[$p] = ((.projects[$p] // {}) + {owner:$owner,number:$number,state:"migrating",move:{from:{owner:$from_owner,number:$from_number},to:{owner:$owner,number:$number},requested_at:$now,confirmed:true},orphan_hold_task:null})' \
+    '.projects[$p] = ((.projects[$p] // {}) + {owner:$owner,number:$number,title:$title,url:$url,state:"migrating",move:{from:{owner:$from_owner,number:$from_number},to:{owner:$owner,number:$number},requested_at:$now,confirmed:true},orphan_hold_task:null})' \
     "$TMP_DIR/map.json" >"$TMP_DIR/map.next" || fail "could not prepare the migration mapping"
   mv -f -- "$TMP_DIR/map.next" "$TMP_DIR/map.json"
   map_publish || fail "could not publish the migration mapping"
@@ -586,7 +586,7 @@ map_move() {
   fi
   remaining=$(move_execute)
   if [ "$remaining" -eq 0 ]; then
-    jq --arg p "$project" '.projects[$p].state = "active" | .projects[$p].move = null' "$TMP_DIR/map.json" >"$TMP_DIR/map.next" \
+    jq --arg p "$project" --arg title "$BOARD_TITLE" --arg url "$BOARD_URL" '.projects[$p].state = "active" | .projects[$p].move = null | .projects[$p].title = $title | .projects[$p].url = $url' "$TMP_DIR/map.json" >"$TMP_DIR/map.next" \
       || fail "could not finish the migration mapping"
     mv -f -- "$TMP_DIR/map.next" "$TMP_DIR/map.json"
     map_publish || fail "could not publish the completed migration mapping"

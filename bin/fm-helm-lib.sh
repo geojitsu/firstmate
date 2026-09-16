@@ -625,10 +625,7 @@ fm_helm_plan_program() {
             end
           else
             $matches[0] as $card
-            | if $old != null and $old.item == $card.id
-                 and (($d.board.owner != $board_owner) or ($d.board.number != $board_number)) then
-                {phase: "record", action: "none", task: $r.id, item: $card.id, cache: old_cache($old), note: $d.note}
-              else
+            |
             ($card.content.__typename == "Issue") as $is_issue
             | ($card.content.id // "") as $node
             | ($d.title | @base64) as $dt
@@ -759,7 +756,6 @@ fm_helm_plan_program() {
                                   fields: ($writes | map({name, value, option}))} | tojson)}
                   end
                   end
-              end
           end ];
     def missing_entries:
       if ($records | length) == 0 then [] else

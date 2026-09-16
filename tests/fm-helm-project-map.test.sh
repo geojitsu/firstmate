@@ -287,12 +287,51 @@ grep -F 'item-delete 999 --owner fixture-owner --id old-item' "$case_dir/gh-axi.
 jq -e '.projects.alpha.state == "active" and .projects.alpha.move == null and .projects.alpha.number == 998' \
   "$case_dir/home/data/helm-project-map.json" >/dev/null \
   || fail "move did not finish the routing mapping"
+jq -e '.projects.alpha.title == "Helm Default" and .projects.alpha.url == "https://github.com/users/fixture-owner/projects/999"' \
+  "$case_dir/home/data/helm-project-map.json" >/dev/null \
+  || fail "move did not refresh the destination routing metadata"
 grep -F $'alpha-task\tmoved-item\told-draft' "$case_dir/home/state/helm-cards.tsv" >/dev/null \
   || fail "move did not update the cache to the destination item"
 grep -F $'alpha-task\tfixture-owner\t999\told-item\tfixture-org\t998\tmoved-item\tcomplete' \
   "$case_dir/home/state/helm-moves.tsv" >/dev/null \
   || fail "move ledger did not retain its complete add/delete history"
 pass "confirmed moves preserve card history in the resumable ledger"
+
+case_dir="$TMP_ROOT/future-only-source-sync"
+mkdir -p "$case_dir/plan"
+title_b64=$(printf '%s' 'Alpha task' | base64 | tr -d '\n')
+body_b64=$(printf '%s\n\n%s' '`alpha-task`' 'Body' | base64 | tr -d '\n')
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  alpha-task old-item old-draft draft queued-status p3-priority "$title_b64" "$body_b64" 1 fixture-owner 999 \
+  >"$case_dir/plan/cards.tsv"
+jq -n '[{id:"alpha-task",state:"done",home_path:"/tmp/backlog",desired:{project:"alpha",kind:"ship",priority:"P3",status:"Done",title:"Alpha task",body:"`alpha-task`\n\nBody",board:{owner:"fixture-org",number:998},note:""}}]' \
+  >"$case_dir/plan/desired.json"
+jq -n '{data:{user:{projectV2:{fields:{nodes:[
+  {__typename:"ProjectV2SingleSelectField",id:"status-field",name:"Status",options:[{id:"queued-status",name:"Queued"},{id:"done-status",name:"Done"},{id:"waiting-status",name:"Waiting on you"}]},
+  {__typename:"ProjectV2SingleSelectField",id:"project-field",name:"Project",options:[{id:"alpha-project",name:"alpha"}]},
+  {__typename:"ProjectV2SingleSelectField",id:"kind-field",name:"Kind",options:[{id:"ship-kind",name:"ship"}]},
+  {__typename:"ProjectV2SingleSelectField",id:"priority-field",name:"Priority",options:[{id:"p3-priority",name:"P3"}]}
+]},items:{nodes:[{id:"old-item",content:{__typename:"DraftIssue",id:"old-draft",title:"Alpha task",body:"`alpha-task`\n\nBody"},fieldValues:{nodes:[
+  {name:"Queued",optionId:"queued-status",field:{name:"Status"}},
+  {name:"alpha",optionId:"alpha-project",field:{name:"Project"}},
+  {name:"ship",optionId:"ship-kind",field:{name:"Kind"}},
+  {name:"P3",optionId:"p3-priority",field:{name:"Priority"}}
+]}}]}}}}}' >"$case_dir/plan/board.json"
+: >"$case_dir/plan/deleted.tsv"
+: >"$case_dir/plan/markers.tsv"
+: >"$case_dir/plan/divergences.tsv"
+: >"$case_dir/plan/fps.tsv"
+FM_ROOT_OVERRIDE="$ROOT" bash -c '
+  . "$1"
+  jq -j --slurpfile desired "$2" --rawfile cards "$3" --rawfile deleted "$4" --rawfile markers "$5" --rawfile divergences "$6" --rawfile fps "$7" \
+    --arg force 0 --arg dispatch_status "In flight" --arg now 2 --arg tsv_existed true --arg retain_source 0 --arg retain_project "" \
+    --arg board_owner fixture-owner --argjson board_number 999 --arg default_owner fixture-owner --argjson default_number 999 \
+    "$(fm_helm_plan_program)" "$8"
+' _ "$LIB" "$case_dir/plan/desired.json" "$case_dir/plan/cards.tsv" "$case_dir/plan/deleted.tsv" "$case_dir/plan/markers.tsv" "$case_dir/plan/divergences.tsv" "$case_dir/plan/fps.tsv" "$case_dir/plan/board.json" >"$case_dir/plan/output.nul" \
+  || fail "future-only source-board planning failed"
+[ "$(tr '\0' '\n' <"$case_dir/plan/output.nul" | sed -n '2p')" = update ] \
+  || fail "future-only routing suppressed an existing source card update"
+pass "future-only routing keeps existing source cards synchronized"
 
 # A rebuilt cache must not make a confirmed move overlook source-board cards.
 case_dir="$TMP_ROOT/cacheless-move"
