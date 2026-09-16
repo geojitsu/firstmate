@@ -9,7 +9,6 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 POLL="$ROOT/bin/fm-helm-poll.sh"
-SYNC="$ROOT/bin/fm-helm-sync.sh"
 TMP_ROOT=$(fm_test_tmproot fm-helm-poll)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -23,7 +22,7 @@ board_fixture() {  # <status> <priority-name> <priority-id>
           {id:"queued-status",name:"Queued"},{id:"flight-status",name:"In flight"},
           {id:"waiting-status",name:"Waiting on you"},{id:"done-status",name:"Done"}]},
         {__typename:"ProjectV2SingleSelectField",id:"project-field",name:"Project",options:[
-          {id:"firstmate-project",name:"firstmate"},{id:"other-project",name:"other"}]},
+          {id:"fixture-firstmate-project",name:"fixture-firstmate"},{id:"other-project",name:"other"}]},
         {__typename:"ProjectV2SingleSelectField",id:"kind-field",name:"Kind",options:[
           {id:"ship-kind",name:"ship"},{id:"investigation-kind",name:"investigation"},
           {id:"decision-kind",name:"decision"}]},
@@ -65,7 +64,11 @@ SH
 }
 
 run_poll() {  # <case-dir> <fakebin>
-  FM_HOME="$1/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$1/board.json" \
+  mkdir -p "$1/gh-config"
+  [ "$(PATH="$2:$PATH" command -v gh)" = "$2/gh" ] \
+    || fail "poll test did not install its fail-closed gh fake"
+  GH_CONFIG_DIR="$1/gh-config" GH_HOST=127.0.0.1:9 \
+    FM_HOME="$1/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$1/board.json" \
     FM_FAKE_BOARD_PAGE_2="${FM_FAKE_BOARD_PAGE_2:-}" \
     PATH="$2:$PATH" "$POLL"
 }
@@ -78,7 +81,11 @@ run_poll_without_timeout() {  # <case-dir> <fakebin>
     ln -sf "$(command -v "$command")" "$portable_bin/$command"
   done
   ln -sf "$2/gh" "$portable_bin/gh"
-  FM_HOME="$1/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$1/board.json" \
+  [ "$(PATH="$portable_bin" command -v gh)" = "$portable_bin/gh" ] \
+    || fail "portable poll test did not install its fail-closed gh fake"
+  mkdir -p "$1/gh-config"
+  GH_CONFIG_DIR="$1/gh-config" GH_HOST=127.0.0.1:9 \
+    FM_HOME="$1/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$1/board.json" \
     FM_FAKE_BOARD_PAGE_2="$1/page-two.json" PATH="$portable_bin" "$POLL"
 }
 
@@ -92,19 +99,23 @@ out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "poll without config exited nonze
 [ -e "$case_dir/home/state/.helm-board-poll" ] && fail "poll without config wrote state"
 pass "the board poll is inert until config/helm.json exists"
 
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] t - T (repo: firstmate) (kind: ship) (since: 2026-09-05)
+- [ ] t - T (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
 ## Done
 EOF
 board_fixture Queued P3 p3-priority > "$case_dir/board.json"
 
-# Make the backlog "quiescent": record its combined hash the way the sync does.
-FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$case_dir/board.json" \
-  PATH="$fb:$PATH" "$SYNC" >/dev/null 2>&1 || fail "seed sync failed"
+# Make the backlog "quiescent": record the combined hash through the same
+# helper the sync uses. This poll fixture intentionally does not model write
+# mutations, so it should not need a successful board sync just to baseline.
+FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" bash -c \
+  '. "$1/bin/fm-helm-lib.sh"; fm_helm_combined_hash "$2/data/backlog.md" "$2/data/helm-project-map.json"' \
+  _ "$ROOT" "$case_dir/home" >"$case_dir/home/state/.helm-sync-backlog.sha256" \
+  || fail "could not seed the sync hash"
 
 # First poll baselines silently.
 out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "first poll exited nonzero: $out"
@@ -114,7 +125,7 @@ pass "the first board poll baselines the signature without waking"
 
 # No change -> silent.
 out=$(run_poll "$case_dir" "$fb" 2>&1)
-[ -z "$out" ] || fail "an unchanged board woke firstmate: $out"
+[ -z "$out" ] || fail "an unchanged board woke fixture-firstmate: $out"
 pass "an unchanged board produces no wake"
 
 # Captain edits the board while the backlog is quiescent -> one wake line.
@@ -126,21 +137,23 @@ pass "a board edit on a quiescent backlog prints exactly one wake line"
 
 # Same edit again -> already baselined -> silent.
 out=$(run_poll "$case_dir" "$fb" 2>&1)
-[ -z "$out" ] || fail "the same board edit woke firstmate twice: $out"
-pass "a board edit wakes firstmate only once"
+[ -z "$out" ] || fail "the same board edit woke fixture-firstmate twice: $out"
+pass "a board edit wakes fixture-firstmate only once"
 
 # Board change while a backlog change is pending -> reconciliation wake.
 board_fixture Done P4 p4-priority > "$case_dir/board.json"
 cat >> "$case_dir/home/data/backlog.md" <<'EOF'
-- [ ] t2 - Another (repo: firstmate) (kind: ship) (since: 2026-09-06)
+- [ ] t2 - Another (repo: fixture-firstmate) (kind: ship) (since: 2026-09-06)
 EOF
 out=$(run_poll "$case_dir" "$fb" 2>&1)
 printf '%s\n' "$out" | grep -F 'Helm board and backlog both changed' >/dev/null \
   || fail "a concurrent board and backlog change did not request reconciliation: $out"
 pass "a board change with a pending backlog change requests reconciliation"
 
-FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_BOARD="$case_dir/board.json" \
-  PATH="$fb:$PATH" "$SYNC" >/dev/null 2>&1 || fail "pagination sync baseline failed"
+FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" bash -c \
+  '. "$1/bin/fm-helm-lib.sh"; fm_helm_combined_hash "$2/data/backlog.md" "$2/data/helm-project-map.json"' \
+  _ "$ROOT" "$case_dir/home" >"$case_dir/home/state/.helm-sync-backlog.sha256" \
+  || fail "could not seed the pagination sync hash"
 rm -f "$case_dir/home/state/.helm-board-poll"
 board_fixture Done P4 p4-priority | jq '.data.user.projectV2.items.pageInfo={hasNextPage:true,endCursor:"page-2"}' > "$case_dir/board.json"
 board_fixture Queued P3 p3-priority > "$case_dir/page-two.json"
@@ -151,7 +164,7 @@ board_fixture "In flight" P0 p0-priority > "$case_dir/page-two.json"
 FM_FAKE_BOARD_PAGE_2="$case_dir/page-two.json" out=$(run_poll "$case_dir" "$fb" 2>&1) \
   || fail "second paginated poll exited nonzero: $out"
 printf '%s\n' "$out" | grep -F 'fm-helm-sync.sh --force' >/dev/null \
-  || fail "a page-two board edit did not wake firstmate: $out"
+  || fail "a page-two board edit did not wake fixture-firstmate: $out"
 pass "the board poll detects an edit on a second project page"
 
 rm -f "$case_dir/home/state/.helm-board-poll"

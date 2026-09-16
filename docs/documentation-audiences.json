@@ -441,6 +441,18 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/1.architecture/helm-project-routing.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/2.api/guides/helm-project-routing.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/2.api/helm-project-map.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/arm-pretool-check.md",
       "audience": "maintainer-architecture"
     },
@@ -522,6 +534,10 @@
     },
     {
       "path": "docs/configuration.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/4.configuration.md",
       "audience": "operator-current"
     },
     {

@@ -5,8 +5,9 @@
 # bin/fm-helm-poll.sh (the cheap read-only board-change poll). It owns:
 #   - local fleet home discovery from data/secondmates.md,
 #   - the one data/backlog.md parser, run once per discovered home,
-#   - the combined debounce hash over every discovered home's backlog,
-#   - the one board signature the poll and the sync both fold,
+#   - the combined debounce hash over every discovered home's backlog and the
+#     project map,
+#   - the per-board signatures the poll and the sync both fold,
 #   - the card renderer and the one-pass reconciliation planner the sync
 #     executes (see "Plan format" below),
 #   - small sha256 helpers.
@@ -107,10 +108,10 @@ fm_helm_discover_homes() {
   done <"$reg"
 }
 
-# fm_helm_combined_hash <backlog-path>...
-# One digest over every backlog file, in the given order, with a boundary token
-# between homes and an explicit marker for an absent file. Any change to any
-# home's backlog changes this digest.
+# fm_helm_combined_hash <path>...
+# One digest over every supplied file, in the given order, with a boundary token
+# between files and an explicit marker for an absent file. Any change to a
+# home's backlog or the project map changes this digest.
 fm_helm_combined_hash() {
   local f
   {
@@ -123,6 +124,140 @@ fm_helm_combined_hash() {
       printf '\036--fm-helm-home-boundary--\036'
     done
   } | fm_helm_sha256_stdin
+}
+
+# fm_helm_project_names <home-path>...
+# Print each registered project name once, in first-seen home order. The
+# project registry remains the authority for Helm's Project field and board
+# routing; an absent registry contributes no names.
+fm_helm_project_names() {
+  local home
+  for home in "$@"; do
+    [ -f "$home/data/projects.md" ] && [ ! -L "$home/data/projects.md" ] || continue
+    awk '$1 == "-" && $2 != "" { print $2 }' "$home/data/projects.md"
+  done | awk '!seen[$0]++'
+}
+
+fm_helm_project_added_date() {
+  local project=$1 home
+  shift
+  for home in "$@"; do
+    [ -f "$home/data/projects.md" ] && [ ! -L "$home/data/projects.md" ] || continue
+    awk -v p="$project" '$1 == "-" && $2 == p && match($0, /\(added [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)/) { print substr($0, RSTART + 7, 10); exit }' "$home/data/projects.md"
+  done | head -1
+}
+
+# fm_helm_ensure_field_options <run-fn> <project-id> <field-name> <required-csv>
+#
+# Ensures GitHub Project <project-id>'s single-select field <field-name> has
+# every option named in the comma-separated <required-csv>. Creates the field
+# with the full required set when it does not exist yet; otherwise adds only
+# the options that are missing, carrying every already-present option's id,
+# color, and description forward unchanged so cards already set to it, and
+# its own display color, are undisturbed. Idempotent: a field that already
+# has every required option makes no GitHub call.
+#
+# <run-fn> is the name of a function the caller defines that runs
+# `gh-axi api graphql "$@"` (or an equivalently bounded wrapper) and prints
+# the raw JSON response; the singleSelectOptions GraphQL input requires a
+# non-null name/color/description per option, so every entry this function
+# sends carries all three even when only carrying an existing option forward.
+fm_helm_ensure_field_options() {
+  local run_fn=$1 project_id=$2 field=$3 required=$4
+  local detail response field_id existing name missing_csv
+  local -a have=() missing=() names=() ids=() colors=() descs=() args=()
+  # shellcheck disable=SC2016 # GraphQL variables must remain literal.
+  detail='query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{__typename ... on ProjectV2FieldCommon{id name} ... on ProjectV2SingleSelectField{id name options{id name color description}}}}}}}'
+  response=$("$run_fn" --field "query=$detail" --field "projectId=$project_id") || return 1
+  jq -e '(.errors // []) | length == 0' <<<"$response" >/dev/null 2>&1 || return 1
+  field_id=$(jq -r --arg f "$field" \
+    '[.data.node.fields.nodes[]? | select(.name == $f and .__typename == "ProjectV2SingleSelectField") | .id][0] // empty' \
+    <<<"$response")
+  existing=$(jq -c --arg f "$field" \
+    '[.data.node.fields.nodes[]? | select(.name == $f and .__typename == "ProjectV2SingleSelectField") | .options[]?]' \
+    <<<"$response")
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    have+=("$name")
+  done < <(jq -r '.[].name' <<<"$existing")
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if [ "${#have[@]}" -gt 0 ] && printf '%s\n' "${have[@]}" | grep -qxF "$name"; then
+      continue
+    fi
+    missing+=("$name")
+  done < <(printf '%s\n' "$required" | tr ',' '\n')
+  [ "${#missing[@]}" -gt 0 ] || return 0
+  if [ -z "$field_id" ]; then
+    # The field does not exist yet: create it with the full required set.
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      names+=("$name"); ids+=(""); colors+=("GRAY"); descs+=("")
+    done < <(printf '%s\n' "$required" | tr ',' '\n')
+  else
+    # The field exists: carry every current option forward, then append the
+    # gap. The unit separator (not a tab) keeps `read` from collapsing an
+    # empty color or description field, which tab does since it is
+    # whitespace-class in IFS word splitting.
+    while IFS=$'\037' read -r name color desc id; do
+      [ -n "$name" ] || continue
+      names+=("$name"); ids+=("$id"); colors+=("${color:-GRAY}"); descs+=("$desc")
+    done < <(jq -r '.[] | [(.name // ""), (.color // ""), (.description // ""), (.id // "")] | join("")' <<<"$existing")
+    for name in "${missing[@]}"; do
+      names+=("$name"); ids+=(""); colors+=("GRAY"); descs+=("")
+    done
+  fi
+  local vars='' literals='' i
+  for ((i = 0; i < ${#names[@]}; i++)); do
+    vars="$vars, \$name$i:String!, \$color$i:ProjectV2SingleSelectFieldOptionColor!, \$desc$i:String!"
+    args+=(--field "name$i=${names[$i]}" --field "color$i=${colors[$i]}" --field "desc$i=${descs[$i]}")
+    if [ -n "${ids[$i]}" ]; then
+      vars="$vars, \$id$i:String!"
+      args+=(--field "id$i=${ids[$i]}")
+      literals="${literals:+$literals,}{id:\$id$i,name:\$name$i,color:\$color$i,description:\$desc$i}"
+    else
+      literals="${literals:+$literals,}{name:\$name$i,color:\$color$i,description:\$desc$i}"
+    fi
+  done
+  local query
+  if [ -z "$field_id" ]; then
+    query="mutation(\$projectId:ID!, \$fname:String!$vars){createProjectV2Field(input:{projectId:\$projectId,dataType:SINGLE_SELECT,name:\$fname,singleSelectOptions:[$literals]}){projectV2Field{... on ProjectV2SingleSelectField{options{name}}}}}"
+    response=$("$run_fn" --field "query=$query" --field "projectId=$project_id" --field "fname=$field" "${args[@]}") || return 1
+  else
+    query="mutation(\$fieldId:ID!$vars){updateProjectV2Field(input:{fieldId:\$fieldId,singleSelectOptions:[$literals]}){projectV2Field{... on ProjectV2SingleSelectField{options{name}}}}}"
+    response=$("$run_fn" --field "query=$query" --field "fieldId=$field_id" "${args[@]}") || return 1
+  fi
+  jq -e '(.errors // []) | length == 0' <<<"$response" >/dev/null 2>&1 || return 1
+  missing_csv=$(jq -r '(.data.createProjectV2Field // .data.updateProjectV2Field).projectV2Field.options[]?.name' <<<"$response" 2>/dev/null)
+  for name in "${missing[@]}"; do
+    printf '%s\n' "$missing_csv" | grep -qxF "$name" || return 1
+  done
+}
+
+# fm_helm_mapping_orphan_id <project-name> - derive the stable captain-hold id
+# used for a broken local-project or GitHub-board mapping.
+fm_helm_mapping_orphan_id() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g; s/-\{2,\}/-/g; s/^-*//; s/-*$//'
+}
+
+# fm_helm_raise_mapping_orphan <home> <project-name> <reason>
+# Create or reuse the existing captain-hold primitive for one broken mapping.
+# The caller records the returned id in the mapping document; this helper owns
+# only the shared hold operation and never invents a second decision channel.
+fm_helm_raise_mapping_orphan() {
+  local home=$1 project=$2 reason=$3 id hold_reason
+  id="helm-map-$(fm_helm_mapping_orphan_id "$project")"
+  [ "$id" != helm-map- ] || return 1
+  # tasks-axi's captain-hold reason grammar rejects parentheses. Keep the
+  # report's meaning while making the shared hold call valid for both orphan
+  # shapes.
+  hold_reason=${reason//\(/}
+  hold_reason=${hold_reason//\)/}
+  FM_HOME="$home" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-$FM_HELM_LIB_DIR/..}" \
+    "$FM_HELM_LIB_DIR/fm-captain-hold.sh" hold "$id" \
+    --title "Helm routing for $project needs a decision" --reason "$hold_reason" >/dev/null \
+    || return 1
+  printf '%s\n' "$id"
 }
 
 # fm_helm_backlog_parse_program - print the jq -Rn program that turns a
@@ -280,8 +415,8 @@ JQ
 
 # fm_helm_desired_program - print the jq program that renders every record of
 # the fleet backlog union into its desired card: title, body, Status, Kind,
-# Project, and Priority option names, plus the owning home path and any
-# stderr note. Input: the union array. $report_ids: the task ids that have a
+# Project, and Priority option names, plus the owning home path, routed board,
+# and any stderr note. Input: the union array. $report_ids: the task ids that have a
 # data/<id>/report.md in the main home. Output: the same array with .desired
 # and .home_path added to each record.
 fm_helm_desired_program() {
@@ -298,15 +433,30 @@ fm_helm_desired_program() {
     elif $kind == "decision" then "Waiting on you"
     elif .state == "in_flight" then "In flight"
     else "Queued" end;
-  def project_of:
+  def project_of($registered):
     (.repo // "") as $r
-    | if $r == "firetabs" or $r == "geojitsu/firetabs" then "firetabs"
-      elif $r == "BetterBlueToo" or $r == "geojitsu/BetterBlueToo" then "BetterBlueToo"
-      elif $r == "firstmate" or $r == "geojitsu/firstmate" then "firstmate"
-      elif $r == "nocout" or $r == "dc-noc/nocout" then "nocout"
-      elif $r == "cryptoseacurrents" or $r == "copium/cryptoseacurrents" then "cryptoseacurrents"
+    | ($r | if contains("/") then split("/") | .[-1] else . end) as $base
+    | if ($registered | index($r)) != null then $r
+      elif ($registered | index($base)) != null then $base
       elif $r == "other" then "other"
       else null end;
+  def board_of($routing; $registered; $default_owner; $default_number):
+    (.repo // "") as $r
+    | ($r | if contains("/") then split("/") | .[-1] else . end) as $base
+    | ($routing[0].projects // {}) as $projects
+    | (if ($registered | index($r)) != null then $r
+       elif ($registered | index($base)) != null then $base
+       else "" end) as $project
+    | ($projects[$project] // null) as $entry
+    | if $entry != null
+         and (($entry.state // "active") == "active" or ($entry.state // "") == "migrating")
+         and (($entry.owner // "") | type) == "string"
+         and (($entry.owner // "") | length) > 0
+         and (($entry.number // 0) | type) == "number"
+         and (($entry.number // 0) > 0)
+      then {owner: $entry.owner, number: $entry.number}
+      else {owner: $default_owner, number: $default_number}
+      end;
   def type_line($kind):
     if $kind == "ship" then "ship - produces a change and a PR"
     elif $kind == "investigation" then "investigation - produces knowledge, not code"
@@ -329,11 +479,12 @@ fm_helm_desired_program() {
       + (if $pr == "" then "" else "- **PR:** " + $pr + "\n" end)
       + "\n## Notes\n\n"
       + ((.body_lines // []) | map(. + "\n") | join(""))
-      + "\n---\n_Source of truth: `data/backlog.md` in the owning firstmate home._";
+      + "\n---\n_Source of truth: `data/backlog.md` in the owning local home._";
   map(
     kind_of as $kind
     | ((.priority // "3") | priority_name) as $priority
-    | project_of as $project
+    | project_of($registered) as $project
+    | board_of($routing; $registered; $default_owner; $default_number) as $board
     | .id as $id
     | (if (.report_path // "") != "" then .report_path
        elif any($report_ids[]; . == $id) then "data/" + $id + "/report.md"
@@ -348,6 +499,7 @@ fm_helm_desired_program() {
           project: ($project // "other"),
           priority_n: (.priority // "3"),
           priority: $priority,
+          board: $board,
           note: (if $project == null
                  then "fm-helm-sync: unsupported repository " + (.repo // "") + " for " + $id + "; using other"
                  else "" end)
@@ -369,6 +521,10 @@ JQ
 #   $dispatch_status  the configured dispatch Status option name
 #   $now              the epoch second recorded in every cache row
 #   $tsv_existed      "true" when the identity cache existed before this run
+#   $board_owner      owner of the board group being planned
+#   $board_number     number of the board group being planned
+#   $default_owner    owner used to normalize legacy cache rows
+#   $default_number   number used to normalize legacy cache rows
 fm_helm_plan_program() {
   cat <<'JQ'
   ([0] | implode) as $nul
@@ -393,6 +549,9 @@ fm_helm_plan_program() {
   def priority_digit:
     if . == "P0" then "0" elif . == "P1" then "1" elif . == "P2" then "2"
     elif . == "P3" then "3" elif . == "P4" then "4" else "" end;
+  def old_cache($o):
+    [$o.task, $o.item, $o.node, $o.type, $o.status, $o.priority, $o.title, $o.body,
+     $o.epoch, $o.owner, ($o.number | tostring)] | join("\t");
   def entry($o):
     [ $o.phase, $o.action, ($o.task // ""), ($o.item // ""), ($o.cache // ""), ($o.draft // ""),
       ($o.title // ""), ($o.body // ""),
@@ -409,7 +568,7 @@ fm_helm_plan_program() {
   | (reduce $items[] as $i ({}; .[($i | line1)] = true)) as $line1_set
   | ($items | map(select(.content.__typename == "DraftIssue" or .content.__typename == "Issue"))) as $cards_all
   | (reduce $cards_all[] as $c ({}; .[($c | line1)] += [$c])) as $by_line1
-  | (rows($cards) | map({task: (.[0] // ""), item: (.[1] // ""), node: (.[2] // ""), type: (.[3] // ""), status: (.[4] // ""), priority: (.[5] // ""), title: (.[6] // ""), body: (.[7] // ""), fp: (.[4] // ""), v2: (length >= 9)})) as $old_rows
+  | (rows($cards) | map({task: (.[0] // ""), item: (.[1] // ""), node: (.[2] // ""), type: (.[3] // ""), status: (.[4] // ""), priority: (.[5] // ""), title: (.[6] // ""), body: (.[7] // ""), epoch: (.[8] // ""), owner: (.[9] // $default_owner), number: (.[10] // $default_number), fp: (.[4] // ""), v2: (length >= 9)})) as $old_rows
   | ($old_rows | first_by("task")) as $old_by_task
   | (rows($deleted) | map({task: (.[0] // ""), line: join("\t")}) | first_by("task")) as $deleted_by_task
   | (rows($markers) | map({task: (.[0] // ""), item: (.[1] // ""), option: (.[2] // ""), fp: (.[3] // "")})) as $marker_rows
@@ -430,6 +589,7 @@ fm_helm_plan_program() {
   | def record_entries:
       [ $records[] as $r
         | $r.desired as $d
+        | ($retain_source == "1" and $d.project == $retain_project) as $retain
         | ($by_line1["`" + $r.id + "`"] // []) as $matches
         | ($fp_by_task[$r.id].fp // "") as $fp
         | $old_by_task[$r.id] as $old
@@ -442,8 +602,12 @@ fm_helm_plan_program() {
           elif ($matches | length) > 1 then
             {phase: "error", action: ("duplicate Helm cards for " + $r.id)}
           elif ($matches | length) == 0 then
-            if $deleted_by_task[$r.id] != null then
+            if $retain then
+              {phase: "record", action: "skip", task: $r.id, note: $d.note}
+            elif $deleted_by_task[$r.id] != null then
               {phase: "record", action: "skip", task: $r.id, tombstone: $deleted_by_task[$r.id].line, note: $d.note}
+            elif $old != null and $old.item != "" and (($old.owner != $board_owner) or (($old.number | tostring) != ($board_number | tostring))) then
+              {phase: "record", action: "none", task: $r.id, cache: old_cache($old), note: $d.note}
             elif $old != null and $r.state != "done" and $old.item != "" and ($item_set[$old.item] | not) then
               {phase: "record", action: "skip", task: $r.id, note: $d.note}
             else
@@ -452,7 +616,7 @@ fm_helm_plan_program() {
                 {id: $kind_field, name: "Kind", value: $d.kind, option: $ko},
                 {id: $priority_field, name: "Priority", value: $d.priority, option: $pro} ] as $writes
               | {phase: "record", action: "create", task: $r.id, title: $d.title, body: $d.body,
-                 cache: ($r.id + "\t\t\tdraft\t" + $so + "\t" + $pro + "\t" + ($d.title | @base64) + "\t" + ($d.body | @base64) + "\t" + $now),
+                 cache: ($r.id + "\t\t\tdraft\t" + $so + "\t" + $pro + "\t" + ($d.title | @base64) + "\t" + ($d.body | @base64) + "\t" + $now + "\t" + $board_owner + "\t" + ($board_number | tostring)),
                  fields: $writes, marker: (if has_marker($r.id) then "remove" else "" end),
                  home: $r.home_path, note: $d.note, fp: $fp,
                  expected: ({title: $d.title, body: $d.body, fields: []} | tojson),
@@ -461,7 +625,8 @@ fm_helm_plan_program() {
             end
           else
             $matches[0] as $card
-            | ($card.content.__typename == "Issue") as $is_issue
+            |
+            ($card.content.__typename == "Issue") as $is_issue
             | ($card.content.id // "") as $node
             | ($d.title | @base64) as $dt
             | ($d.body | @base64) as $db
@@ -508,7 +673,7 @@ fm_helm_plan_program() {
                 (if $conflict then $bs elif $rebuilt or $status_normal or $cs == $so then $so elif $waiting_status_changed then $cs else $bs end) + "\t" +
                 (if $conflict then $bp elif $rebuilt then $pro else (if $priority_board_changed then $cp else $pro end) end) + "\t" +
                 (if $conflict then $bt elif $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $dt else $bt end) + "\t" +
-                (if $conflict then $bb elif $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $db else $bb end) + "\t" + $now) as $cache
+                (if $conflict then $bb elif $rebuilt or ($ct == $dt and $cb == $db) or ($text_board_changed | not) then $db else $bb end) + "\t" + $now + "\t" + $board_owner + "\t" + ($board_number | tostring)) as $cache
             | if $force == "0" and $old != null and $old.v2 and $old.status == $so and $old.priority == $pro and $old.title == $dt and $old.body == $db then
                 {phase: "record", action: "none", task: $r.id, item: $card.id, cache: $cache, note: $d.note}
               else
@@ -563,7 +728,7 @@ fm_helm_plan_program() {
                      (if any($writes[]; .name == "Status") then $so elif $status_conflict then $bs elif $waiting_status_changed then $cs elif $rebuilt or $status_normal or $cs == $so then $so else $bs end) + "\t" +
                      (if any($writes[]; .name == "Priority") then $pro elif $priority_conflict then $bp elif $rebuilt then $pro else (if $priority_board_changed then $cp else $pro end) end) + "\t" +
                      (if $title_write then $dt elif $title_conflict then $bt elif $rebuilt or $ct == $dt or ($title_board_changed | not) then $dt else $bt end) + "\t" +
-                     (if $body_write then $db elif $body_conflict then $bb elif $rebuilt or $cb == $db or ($body_board_changed | not) then $db else $bb end) + "\t" + $now) as $cache
+                     (if $body_write then $db elif $body_conflict then $bb elif $rebuilt or $cb == $db or ($body_board_changed | not) then $db else $bb end) + "\t" + $now + "\t" + $board_owner + "\t" + ($board_number | tostring)) as $cache
                   | {phase: "record",
                      action: (if $text.draft != "" or ($writes | length) > 0 then "update" else "none" end),
                      task: $r.id, item: $card.id, cache: $cache, draft: $text.draft,
@@ -590,7 +755,7 @@ fm_helm_plan_program() {
                      ack_write: ({new: false, text: ($text.draft != ""), title: (if $title_write then $d.title else $card_title end), body: (if $body_write then $d.body else $card_body end),
                                   fields: ($writes | map({name, value, option}))} | tojson)}
                   end
-              end
+                  end
           end ];
     def missing_entries:
       if ($records | length) == 0 then [] else
@@ -620,6 +785,7 @@ fm_helm_plan_program() {
       if $tsv_existed != "true" then [] else
       [ $old_rows[] as $o
         | if $o.task == "" or $o.item == "" then empty
+          elif $o.owner != $board_owner or ($o.number | tostring) != ($board_number | tostring) then empty
           elif $item_set[$o.item] then empty
           elif $line1_set["`" + $o.task + "`"] then empty
           else

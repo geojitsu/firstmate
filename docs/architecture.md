@@ -318,8 +318,8 @@ Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committe
 
 ## Helm board synchronization
 
-The optional `bin/fm-helm-sync.sh` gives the captain one GitHub Project v2 view over the whole fleet's durable backlog without making the board a second task database.
-It runs from the main home only and is the single writer of the board.
+The optional `bin/fm-helm-sync.sh` gives the captain grouped GitHub Project v2 views over the whole fleet's durable backlog without making boards a second task database.
+It runs from the main home only and is the single writer of those boards.
 It discovers every local secondmate home from `data/secondmates.md`, parses each home's `data/backlog.md` through the one parser in `bin/fm-helm-lib.sh`, and reconciles the union against the board.
 A card is closed to Done only when its task id is in no home's backlog.
 Remote secondmate homes are out of scope for now; `bin/fm-helm-lib.sh` records the planned owner-marker path for when the first one appears.
@@ -327,6 +327,14 @@ It resolves the project fields and option ids by name at runtime, so a board own
 The sync creates missing draft cards and keeps the backlog-owned fields in step with the backlog.
 It also tolerates a card the captain converted to a real repo issue: such a card keeps full field sync but its title and body are never rewritten.
 It never archives or deletes a card, and a malformed backlog parse fails open before any board mutation.
+
+`data/helm-project-map.json` routes the exact project identity from the local
+registries to an `owner`/`number` board. The configured `config/helm.json`
+board remains the default bucket, and several project identities may share any
+one board. `fm-helm-project-map.sh` owns linking, explicit card moves, and
+unlinking; `state/helm-moves.tsv` makes the two-step add/create-then-delete move
+resumable. `fm-helm-reconcile.sh` is the slower cross-board drift check and
+uses `fm-captain-hold.sh` for broken mappings or vanished boards.
 
 An explicit `--force` read accepts approved captain board edits and routes unresolved changes through ordinary firstmate intake.
 The [Helm board sync configuration](configuration.md#helm-board-sync-confighelmjson) owns watcher registration, field authority, wake behavior, and the accepted pre-write containment limit.

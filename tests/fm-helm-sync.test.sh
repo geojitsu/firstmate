@@ -18,7 +18,7 @@ TMP_ROOT=$(fm_test_tmproot fm-helm-sync)
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
 # board_json <extra-item-nodes-json> - a project fixture with the P0..P4 and the
-# nocout/cryptoseacurrents options the shipped board carries.
+# fixture-nocout/fixture-csc options the shipped board carries.
 board_json() {
   local items=$1 spool
   spool=$(mktemp "$TMP_ROOT/items.XXXXXX") || fail "could not spool board items"
@@ -35,11 +35,11 @@ board_json() {
           {id:"done-status",name:"Done"}
         ]},
         {__typename:"ProjectV2SingleSelectField",id:"project-field",name:"Project",options:[
-          {id:"firetabs-project",name:"firetabs"},
-          {id:"bbt-project",name:"BetterBlueToo"},
-          {id:"firstmate-project",name:"firstmate"},
-          {id:"nocout-project",name:"nocout"},
-          {id:"csc-project",name:"cryptoseacurrents"},
+          {id:"fixture-firetabs-project",name:"fixture-firetabs"},
+          {id:"bbt-project",name:"fixture-blue"},
+          {id:"fixture-firstmate-project",name:"fixture-firstmate"},
+          {id:"fixture-nocout-project",name:"fixture-nocout"},
+          {id:"csc-project",name:"fixture-csc"},
           {id:"other-project",name:"other"}
         ]},
         {__typename:"ProjectV2SingleSelectField",id:"kind-field",name:"Kind",options:[
@@ -95,6 +95,36 @@ if [ "${1:-}" = api ]; then
   fi
   [ -z "${FM_FAKE_GH_LATENCY:-}" ] || sleep "$FM_FAKE_GH_LATENCY"
   case "$*" in
+    *'node(id:$projectId)'*)
+      jq '{data:{node:{fields:{nodes:.data.user.projectV2.fields.nodes}}}}' "$FM_FAKE_BOARD_STATE" ;;
+    *createProjectV2Field*|*updateProjectV2Field*)
+      declare -A opt_name=() opt_color=()
+      fname=; field_id_arg=
+      for arg in "$@"; do
+        case "$arg" in
+          fname=*) fname=${arg#fname=} ;;
+          fieldId=*) field_id_arg=${arg#fieldId=} ;;
+          name[0-9]*=*) idx=${arg%%=*}; idx=${idx#name}; opt_name[$idx]=${arg#*=} ;;
+          color[0-9]*=*) idx=${arg%%=*}; idx=${idx#color}; opt_color[$idx]=${arg#*=} ;;
+        esac
+      done
+      options_json='[]'
+      for idx in "${!opt_name[@]}"; do
+        name=${opt_name[$idx]}; color=${opt_color[$idx]:-GRAY}
+        options_json=$(jq -c --arg id "${name}-project" --arg name "$name" --arg color "$color" \
+          '. + [{id:$id,name:$name,color:$color,description:""}]' <<<"$options_json")
+      done
+      if [ -n "$field_id_arg" ]; then
+        jq --arg fid "$field_id_arg" --argjson options "$options_json" \
+          '.data.user.projectV2.fields.nodes |= map(if .id == $fid then .options = $options else . end)' \
+          "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+      else
+        jq --arg name "$fname" --argjson options "$options_json" \
+          '.data.user.projectV2.fields.nodes += [{__typename:"ProjectV2SingleSelectField",id:($name+"-field"),name:$name,options:$options}]' \
+          "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+      fi
+      jq -n --argjson options "$options_json" \
+        '{data:{updateProjectV2Field:{projectV2Field:{options:$options}},createProjectV2Field:{projectV2Field:{options:$options}}}}' ;;
     *addProjectV2DraftIssue*)
       for arg in "$@"; do
         case "$arg" in
@@ -207,7 +237,19 @@ SH
 run_sync() {  # <case-dir> <fakebin> [--force]
   local case_dir=$1 fb=$2 arg=${3:-}
   local -a a=()
+  mkdir -p "$case_dir/gh-config"
+  [ "$(PATH="$fb:$PATH" command -v gh)" = "$fb/gh" ] \
+    || fail "sync test did not install its fail-closed gh fake"
   [ -z "$arg" ] || a+=("$arg")
+  if [ ! -f "$case_dir/home/data/projects.md" ]; then
+    cat > "$case_dir/home/data/projects.md" <<'EOF'
+# Projects
+
+- fixture-firetabs [direct-PR] - test project (added 2026-09-01)
+- fixture-firstmate [no-mistakes] - test project (added 2026-09-01)
+- fixture-nocout [no-mistakes] - test project (added 2026-09-01)
+EOF
+  fi
   cp "$case_dir/board.json" "$case_dir/board-state.json"
   if [ -n "${FM_FAKE_BOARD_PAGE_2:-}" ]; then
     if jq -s '.[0] as $first | .[1] as $second
@@ -220,7 +262,8 @@ run_sync() {  # <case-dir> <fakebin> [--force]
       fail "could not stage paginated fake board state"
     fi
   fi
-  FM_HOME="$case_dir/home" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 \
+    FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_BOARD="$case_dir/board.json" \
     FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
@@ -240,8 +283,12 @@ run_sync() {  # <case-dir> <fakebin> [--force]
 
 run_poll() {  # <case-dir> <fakebin>
   local case_dir=$1 fb=$2
+  mkdir -p "$case_dir/gh-config"
+  [ "$(PATH="$fb:$PATH" command -v gh)" = "$fb/gh" ] \
+    || fail "poll test did not install its fail-closed gh fake"
   cp "$case_dir/board.json" "$case_dir/board-state.json"
-  FM_HOME="$case_dir/home" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 \
+    FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_BOARD="$case_dir/board.json" \
     FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
@@ -253,8 +300,12 @@ run_poll() {  # <case-dir> <fakebin>
 
 run_watch() {  # <case-dir> <fakebin>
   local case_dir=$1 fb=$2
+  mkdir -p "$case_dir/gh-config"
+  [ "$(PATH="$fb:$PATH" command -v gh)" = "$fb/gh" ] \
+    || fail "watch test did not install its fail-closed gh fake"
   cp "$case_dir/board.json" "$case_dir/board-state.json"
-  FM_HOME="$case_dir/home" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 \
+    FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_BOARD="$case_dir/board.json" \
     FM_FAKE_BOARD_STATE="$case_dir/board-state.json" \
@@ -274,41 +325,41 @@ run_watch() {  # <case-dir> <fakebin>
 case_dir="$TMP_ROOT/pr-link-shapes"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] github-pr-task - GitHub PR task (repo: firstmate) (kind: ship) (since: 2026-09-05) https://github.com/geojitsu/firstmate/pull/123
-- [ ] gitlab-mr-task - GitLab MR task (repo: nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/dc-noc/nocout/-/merge_requests/123
-- [ ] gitlab-bare-mr-task - GitLab bare MR task (repo: nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/dc-noc/nocout/merge_requests/456
-- [ ] gitlab-zero-mr-task - GitLab zero MR task (repo: nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/dc-noc/nocout/-/merge_requests/0
-- [ ] gitlab-suffixed-mr-task - GitLab suffixed MR task (repo: nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/dc-noc/nocout/-/merge_requests/12x
+- [ ] github-pr-task - GitHub PR task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05) https://github.com/fixture-owner/fixture-firstmate/pull/123
+- [ ] gitlab-mr-task - GitLab MR task (repo: fixture-nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/fixture-org/fixture-nocout/-/merge_requests/123
+- [ ] gitlab-bare-mr-task - GitLab bare MR task (repo: fixture-nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/fixture-org/fixture-nocout/merge_requests/456
+- [ ] gitlab-zero-mr-task - GitLab zero MR task (repo: fixture-nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/fixture-org/fixture-nocout/-/merge_requests/0
+- [ ] gitlab-suffixed-mr-task - GitLab suffixed MR task (repo: fixture-nocout) (kind: ship) (since: 2026-09-05) https://gitlab.com/fixture-org/fixture-nocout/-/merge_requests/12x
 ## Done
 EOF
 board_json '[]' > "$case_dir/board.json"
 run_sync "$case_dir" "$fb" >/dev/null 2>&1 || fail "PR-link shape sync failed"
-jq -e --arg url 'https://github.com/geojitsu/firstmate/pull/123' '
+jq -e --arg url 'https://github.com/fixture-owner/fixture-firstmate/pull/123' '
   [.data.user.projectV2.items.nodes[].content.body]
   | any(.[]; contains("- **PR:** " + $url))
 ' "$case_dir/board-state.json" >/dev/null \
   || fail "a GitHub pull-request URL did not render in the Facts section"
-jq -e --arg url 'https://gitlab.com/dc-noc/nocout/-/merge_requests/123' '
+jq -e --arg url 'https://gitlab.com/fixture-org/fixture-nocout/-/merge_requests/123' '
   [.data.user.projectV2.items.nodes[].content.body]
   | any(.[]; contains("- **PR:** " + $url))
 ' "$case_dir/board-state.json" >/dev/null \
   || fail "a GitLab merge-request URL did not render in the Facts section"
-jq -e --arg url 'https://gitlab.com/dc-noc/nocout/merge_requests/456' '
+jq -e --arg url 'https://gitlab.com/fixture-org/fixture-nocout/merge_requests/456' '
   [.data.user.projectV2.items.nodes[].content.body]
   | all(.[]; contains("- **PR:** " + $url) | not)
 ' "$case_dir/board-state.json" >/dev/null \
   || fail "a bare GitLab merge-request URL rendered in the Facts section"
-jq -e --arg url 'https://gitlab.com/dc-noc/nocout/-/merge_requests/0' '
+jq -e --arg url 'https://gitlab.com/fixture-org/fixture-nocout/-/merge_requests/0' '
   [.data.user.projectV2.items.nodes[].content.body]
   | all(.[]; contains("- **PR:** " + $url) | not)
 ' "$case_dir/board-state.json" >/dev/null \
   || fail "a zero GitLab merge-request URL rendered in the Facts section"
-jq -e --arg url 'https://gitlab.com/dc-noc/nocout/-/merge_requests/12x' '
+jq -e --arg url 'https://gitlab.com/fixture-org/fixture-nocout/-/merge_requests/12x' '
   [.data.user.projectV2.items.nodes[].content.body]
   | all(.[]; contains("- **PR:** " + $url) | not)
 ' "$case_dir/board-state.json" >/dev/null \
@@ -322,12 +373,12 @@ case_dir="$TMP_ROOT/union"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state" \
   "$case_dir/sm/data" "$case_dir/sm/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2,"dispatch_status":"In flight"}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999,"dispatch_status":"In flight"}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] main-task - Main queued (repo: firstmate) (kind: ship) (priority: 0) (since: 2026-09-05)
+- [ ] main-task - Main queued (repo: fixture-firstmate) (kind: ship) (priority: 0) (since: 2026-09-05)
 ## Done
 EOF
 cat > "$case_dir/home/data/secondmates.md" <<EOF
@@ -337,7 +388,7 @@ cat > "$case_dir/sm/data/backlog.md" <<'EOF'
 # Backlog
 
 ## In flight
-- [ ] sm-task - Secondmate flight (repo: firetabs) (kind: ship) (priority: 2) (since: 2026-09-05)
+- [ ] sm-task - Secondmate flight (repo: fixture-firetabs) (kind: ship) (priority: 2) (since: 2026-09-05)
 ## Done
 EOF
 board_json "$(jq -n \
@@ -367,12 +418,12 @@ pass "fleet union reconciles every home and closes only cards in no home's backl
 pagination_dir="$TMP_ROOT/pagination"
 mkdir -p "$pagination_dir/home/config" "$pagination_dir/home/data" "$pagination_dir/home/state"
 pagination_fb=$(install_fakes "$pagination_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$pagination_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$pagination_dir/home/config/helm.json"
 cat > "$pagination_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## In flight
-- [ ] page-two-task - Second page task (repo: firstmate) (kind: ship) (since: 2026-09-05)
+- [ ] page-two-task - Second page task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
 ## Done
 EOF
 board_json '[]' | jq '.data.user.projectV2.items.pageInfo={hasNextPage:true,endCursor:"page-2"}' > "$pagination_dir/board.json"
@@ -399,17 +450,17 @@ pass "identity cache rebuilds from the board when absent"
 
 # ---------------------------------------------------------------------------
 # Delete detection: a previously synced card gone from the board holds its
-# still-live task for the captain and wakes firstmate; it is not a new card.
+# still-live task for the captain and wakes fixture-firstmate; it is not a new card.
 # ---------------------------------------------------------------------------
 case_dir="$TMP_ROOT/delete"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 acknowledged_body=$(cat <<'EOF'
 
 ## Facts
 
-- **Repo:** firstmate
+- **Repo:** fixture-firstmate
 - **Type:** ship - produces a change and a PR
 - **Priority:** P3
 - **Filed:** 2026-09-09
@@ -418,15 +469,15 @@ acknowledged_body=$(cat <<'EOF'
 
 
 ---
-_Source of truth: `data/backlog.md` in the owning firstmate home._
+_Source of truth: `data/backlog.md` in the owning local home._
 EOF
 )
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] keep-task - Keep me (repo: firstmate) (kind: ship) (since: 2026-09-05)
-- [ ] del-task - Delete my card (repo: firstmate) (kind: ship) (since: 2026-09-05)
+- [ ] keep-task - Keep me (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
+- [ ] del-task - Delete my card (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
 ## Done
 EOF
 board_json "$(jq -n \
@@ -457,7 +508,7 @@ fi
 grep -F 'hold del-task --kind captain' "$case_dir/tasks-axi.log" >/dev/null \
   || fail "deleted card did not hold its live task for the captain: $(cat "$case_dir/tasks-axi.log")"
 grep -F $'\tcheck\thelm-card-deleted:del-task\t' "$case_dir/home/state/.wake-queue" >/dev/null \
-  || fail "deleted card did not wake firstmate"
+  || fail "deleted card did not wake fixture-firstmate"
 if grep -F 'helm-new-card:del-task' "$case_dir/home/state/.wake-queue" >/dev/null; then
   fail "a deleted card was misread as a brand-new captain card"
 fi
@@ -467,8 +518,8 @@ cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] keep-task - Keep me (repo: firstmate) (kind: ship) (since: 2026-09-05)
-- [ ] del-task - Delete my card (repo: firstmate) (kind: ship) (since: 2026-09-05) (hold: captain review) (hold-kind: captain)
+- [ ] keep-task - Keep me (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
+- [ ] del-task - Delete my card (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05) (hold: captain review) (hold-kind: captain)
 ## Done
 EOF
 : > "$case_dir/gh.log"
@@ -492,15 +543,41 @@ fi
   || fail "a restored card did not clear its deletion tombstone"
 pass "a deleted card holds its live task for the captain and is not treated as new"
 
+# A card that stays on the same board (its cached owner/number still match)
+# but no longer carries its task's marker line must be recreated, not
+# silently marked "retained on another board" by a stale identity match.
+marker_dir="$TMP_ROOT/stale-marker"
+mkdir -p "$marker_dir/home/config" "$marker_dir/home/data" "$marker_dir/home/state"
+marker_fb=$(install_fakes "$marker_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$marker_dir/home/config/helm.json"
+cat > "$marker_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] marker-task - Marker task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
+## Done
+EOF
+board_json "$(jq -n --argjson item "$(draft_item marker-item marker-draft marker-task 'Marker task' 'x' Queued queued-status P3 p3-priority)" '[$item]')" > "$marker_dir/board.json"
+run_sync "$marker_dir" "$marker_fb" >/dev/null 2>&1 || fail "stale-marker seed run failed"
+grep -F $'marker-task\tmarker-item\t' "$marker_dir/home/state/helm-cards.tsv" >/dev/null \
+  || fail "stale-marker seed did not record the identity cache row"
+board_json "$(jq -n --argjson item "$(draft_item marker-item marker-draft other-marker 'Marker task' 'x' Queued queued-status P3 p3-priority)" '[$item]')" > "$marker_dir/board.json"
+: > "$marker_dir/gh.log"
+run_sync "$marker_dir" "$marker_fb" --force >/dev/null 2>&1 || fail "stale-marker follow-up run failed"
+if ! grep -qF 'addProjectV2DraftIssue' "$marker_dir/gh.log" || ! grep -qF 'title=Marker task' "$marker_dir/gh.log"; then
+  fail "a same-board card that lost its task marker was silently retained instead of recreated"
+fi
+pass "a same-board card that loses its task marker is recreated, not silently retained"
+
 held_delete_dir="$TMP_ROOT/delete-already-held"
 mkdir -p "$held_delete_dir/home/config" "$held_delete_dir/home/data" "$held_delete_dir/home/state"
 held_delete_fb=$(install_fakes "$held_delete_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$held_delete_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$held_delete_dir/home/config/helm.json"
 cat > "$held_delete_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] captain-held-task - Captain-held task (repo: firstmate) (kind: ship) (since: 2026-09-05) (hold: captain review) (hold-kind: captain)
+- [ ] captain-held-task - Captain-held task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05) (hold: captain review) (hold-kind: captain)
 ## Done
 EOF
 board_json "$(jq -n --argjson item "$(draft_item captain-held-item captain-held-draft captain-held-task 'Captain-held task' 'x' Queued queued-status P3 p3-priority)" '[$item]')" > "$held_delete_dir/board.json"
@@ -526,7 +603,7 @@ board_json "$(jq -n \
 : > "$case_dir/gh.log"
 run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "new-card run failed"
 grep -F $'\tcheck\thelm-new-card:brand-new-idea\t' "$case_dir/home/state/.wake-queue" >/dev/null \
-  || fail "a brand-new captain card did not wake firstmate for intake"
+  || fail "a brand-new captain card did not wake fixture-firstmate for intake"
 if grep -F 'itemId=new-item' "$case_dir/gh.log" | grep -F 'done-status' >/dev/null; then
   fail "a brand-new captain card was wrongly closed to Done"
 fi
@@ -554,12 +631,12 @@ pass "a completed task's Done card is left untouched with no wake"
 case_dir="$TMP_ROOT/issue"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] issue-task - Backlog authoritative title (repo: firstmate) (kind: ship) (priority: 1) (since: 2026-09-05)
+- [ ] issue-task - Backlog authoritative title (repo: fixture-firstmate) (kind: ship) (priority: 1) (since: 2026-09-05)
 ## Done
 EOF
 board_json "$(jq -n --argjson it "$(jq -n '
@@ -585,12 +662,12 @@ pass "a real repo issue keeps field-only sync and its own title and body"
 case_dir="$TMP_ROOT/prio"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] prio-task - Priority task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
+- [ ] prio-task - Priority task (repo: fixture-firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item prio-item prio-draft prio-task 'Priority task' 'x' Queued queued-status P2 p2-priority)" '[$a]')" > "$case_dir/board.json"
@@ -609,12 +686,12 @@ pass "a forced read accepts a captain board Priority edit into the owning backlo
 case_dir="$TMP_ROOT/prio-failure"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] failed-prio - Priority task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
+- [ ] failed-prio - Priority task (repo: fixture-firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item failed-prio-item failed-prio-draft failed-prio 'Priority task' 'x' Queued queued-status P2 p2-priority)" '[$a]')" > "$case_dir/board.json"
@@ -638,12 +715,12 @@ pass "a failed Priority write-back queues reconciliation and remains retryable"
 case_dir="$TMP_ROOT/new-card-forward-progress"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] fresh-task - Fresh task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
+- [ ] fresh-task - Fresh task (repo: fixture-firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
 ## Done
 EOF
 board_json '[]' > "$case_dir/board.json"
@@ -665,12 +742,12 @@ pass "new cards retain a completed baseline after creation"
 case_dir="$TMP_ROOT/three-way"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## In flight
-- [ ] merge-task - Merge task (repo: firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
+- [ ] merge-task - Merge task (repo: fixture-firstmate) (kind: ship) (priority: 2) (since: 2026-09-05)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item merge-item merge-draft merge-task 'Merge task' 'original body' 'In flight' flight-status P2 p2-priority)" '[$a]')" > "$case_dir/board.json"
@@ -732,7 +809,7 @@ cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Done
-- [ ] merge-task - Merge task (repo: firstmate) (kind: ship) (priority: 4) (since: 2026-09-06)
+- [ ] merge-task - Merge task (repo: fixture-firstmate) (kind: ship) (priority: 4) (since: 2026-09-06)
 EOF
 cp "$case_dir/converged-board.json" "$case_dir/board.json"
 : > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"; : > "$case_dir/home/state/.wake-queue"
@@ -759,12 +836,12 @@ pass "no-baseline cards rebuild silently"
 case_dir="$TMP_ROOT/debounce"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] d-task - D (repo: firstmate) (kind: ship) (since: 2026-09-05)
+- [ ] d-task - D (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item d-item d-draft d-task 'D' 'x' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -777,12 +854,12 @@ pass "an unchanged fleet backlog is debounced without a GitHub call"
 case_dir="$TMP_ROOT/poll-acknowledgement"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] acknowledged-task - Acknowledged task (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] acknowledged-task - Acknowledged task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item ack-item ack-draft acknowledged-task 'Acknowledged task' "$acknowledged_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -802,19 +879,19 @@ pass "a backlog-driven board sync acknowledges the poll signature"
 case_dir="$TMP_ROOT/prewrite-conflict"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] conflict-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] conflict-task - Backlog title (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 conflict_body=$(cat <<'EOF'
 
 ## Facts
 
-- **Repo:** firstmate
+- **Repo:** fixture-firstmate
 - **Type:** ship - produces a change and a PR
 - **Priority:** P3
 - **Filed:** 2026-09-09
@@ -823,7 +900,7 @@ conflict_body=$(cat <<'EOF'
 
 
 ---
-_Source of truth: `data/backlog.md` in the owning firstmate home._
+_Source of truth: `data/backlog.md` in the owning local home._
 EOF
 )
 board_json "$(jq -n --argjson a "$(draft_item conflict-item conflict-draft conflict-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -854,12 +931,12 @@ pass "a board/backlog conflict wakes once"
 case_dir="$TMP_ROOT/conflict-progress"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] conflict-progress - Original title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] conflict-progress - Original title (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item conflict-progress-item conflict-progress-draft conflict-progress 'Original title' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -881,12 +958,12 @@ pass "independent progress does not repeat a title conflict"
 case_dir="$TMP_ROOT/title-body-merge"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] text-task - Original title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] text-task - Original title (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item text-item text-draft text-task 'Original title' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -910,12 +987,12 @@ pass "body progress preserves a captain title edit"
 case_dir="$TMP_ROOT/partial-text-conflict"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] partial-text - Original title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] partial-text - Original title (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item partial-item partial-draft partial-text 'Original title' 'original body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -941,12 +1018,12 @@ pass "partial text reconciliation preserves conflict acknowledgement"
 case_dir="$TMP_ROOT/waiting-status"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] waiting-task - Waiting task (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] waiting-task - Waiting task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item waiting-item waiting-draft waiting-task 'Waiting task' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -969,12 +1046,12 @@ pass "Waiting on you yields to later completion"
 case_dir="$TMP_ROOT/status-conflict"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] status-task - Status task (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] status-task - Status task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item status-item status-draft status-task 'Status task' 'body' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -997,12 +1074,12 @@ pass "a status-only conflict wakes once"
 case_dir="$TMP_ROOT/late-prewrite-conflict"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] late-conflict-task - Backlog title (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] late-conflict-task - Backlog title (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item late-conflict-item late-conflict-draft late-conflict-task 'Backlog title' "$conflict_body" Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -1034,12 +1111,12 @@ pass "a late pre-write board conflict preserves the captain edit"
 case_dir="$TMP_ROOT/multi-field-card"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## In flight
-- [ ] multi-task - Revised backlog title (repo: firstmate) (kind: ship) (priority: 0) (since: 2026-09-09)
+- [ ] multi-task - Revised backlog title (repo: fixture-firstmate) (kind: ship) (priority: 0) (since: 2026-09-09)
 ## Done
 EOF
 board_json '[]' > "$case_dir/board.json"
@@ -1053,7 +1130,7 @@ jq -e '
   | .content.title == "Revised backlog title"
     and any(.fieldValues.nodes[]; .field.name == "Status" and .name == "In flight")
     and any(.fieldValues.nodes[]; .field.name == "Priority" and .name == "P0")
-    and any(.fieldValues.nodes[]; .field.name == "Project" and .name == "firstmate")
+    and any(.fieldValues.nodes[]; .field.name == "Project" and .name == "fixture-firstmate")
     and any(.fieldValues.nodes[]; .field.name == "Kind" and .name == "ship")
 ' "$case_dir/board-state.json" >/dev/null \
   || fail "the multi-field card did not land every change: $(jq -c '.data.user.projectV2.items.nodes[] | select(.id == "created-item")' "$case_dir/board-state.json")"
@@ -1081,11 +1158,11 @@ scale_body() {  # <task-id> <Pn> <filed> [note-line...]
   local id=$1 pn=$2 filed=$3
   shift 3
   # shellcheck disable=SC2016 # backticks are card-body literals, not expansions.
-  printf '`%s`\n\n## Facts\n\n- **Repo:** firstmate\n- **Type:** ship - produces a change and a PR\n- **Priority:** %s\n- **Filed:** %s\n\n## Notes\n\n' "$id" "$pn" "$filed"
+  printf '`%s`\n\n## Facts\n\n- **Repo:** fixture-firstmate\n- **Type:** ship - produces a change and a PR\n- **Priority:** %s\n- **Filed:** %s\n\n## Notes\n\n' "$id" "$pn" "$filed"
   local line
   for line in "$@"; do printf '%s\n' "$line"; done
   # shellcheck disable=SC2016 # backticks are card-body literals, not expansions.
-  printf '\n---\n_Source of truth: `data/backlog.md` in the owning firstmate home._'
+  printf '\n---\n_Source of truth: `data/backlog.md` in the owning local home._'
 }
 
 scale_item() {  # <task-id> <title> <body> <status-name> <status-id> <Pn> <pn-id>
@@ -1094,7 +1171,7 @@ scale_item() {  # <task-id> <title> <body> <status-name> <status-id> <Pn> <pn-id
      fieldValues:{nodes:[
        {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Status"},name:$so,optionId:$si},
        {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Priority"},name:$pn,optionId:$pi},
-       {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Project"},name:"firstmate",optionId:"firstmate-project"},
+       {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Project"},name:"fixture-firstmate",optionId:"fixture-firstmate-project"},
        {__typename:"ProjectV2ItemFieldSingleSelectValue",field:{name:"Kind"},name:"ship",optionId:"ship-kind"}
      ]}}'
 }
@@ -1104,16 +1181,16 @@ write_scale_fixtures() {  # <case-dir>
   {
     printf '# Backlog\n\n## In flight\n'
     for i in 1 2 3 4 5; do
-      printf -- '- [ ] scale-flight-%s - Flight task %s (repo: firstmate) (kind: ship) (priority: 1) (since: 2026-09-01)\n' "$i" "$i"
+      printf -- '- [ ] scale-flight-%s - Flight task %s (repo: fixture-firstmate) (kind: ship) (priority: 1) (since: 2026-09-01)\n' "$i" "$i"
     done
     printf '## Queued\n'
     for i in $(seq 1 85); do
-      printf -- '- [ ] scale-queued-%s - Queued task %s (repo: firstmate) (kind: ship) (priority: 3) (since: 2026-09-02)\n' "$i" "$i"
+      printf -- '- [ ] scale-queued-%s - Queued task %s (repo: fixture-firstmate) (kind: ship) (priority: 3) (since: 2026-09-02)\n' "$i" "$i"
       printf '  note for task %s\n' "$i"
     done
     printf '## Done\n'
     for i in $(seq 1 10); do
-      printf -- '- [x] scale-done-%s - Done task %s (repo: firstmate) (kind: ship) (done: 2026-09-10)\n' "$i" "$i"
+      printf -- '- [x] scale-done-%s - Done task %s (repo: fixture-firstmate) (kind: ship) (done: 2026-09-10)\n' "$i" "$i"
     done
   } > "$dir/home/data/backlog.md"
   items="$dir/items.jsonl"
@@ -1149,7 +1226,7 @@ write_scale_fixtures() {  # <case-dir>
 case_dir="$TMP_ROOT/fleet-scale"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 write_scale_fixtures "$case_dir"
 [ "$(jq '.data.user.projectV2.items.nodes | length' "$case_dir/board.json")" -eq 110 ] \
   || fail "scale board fixture is not 110 cards"
@@ -1209,14 +1286,14 @@ pass "a fleet-scale run finishes well inside the deadline and is idempotent"
 case_dir="$TMP_ROOT/resume-after-cutoff"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] cut-a - First card (repo: firstmate) (kind: ship) (since: 2026-09-09)
-- [ ] cut-b - Second card (repo: firstmate) (kind: ship) (since: 2026-09-09)
-- [ ] cut-c - Third card (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] cut-a - First card (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] cut-b - Second card (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] cut-c - Third card (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json '[]' > "$case_dir/board.json"
@@ -1251,12 +1328,12 @@ pass "a run cut off after its first creation resumes from the recorded card"
 case_dir="$TMP_ROOT/resume-after-kill"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state" "$case_dir/tmp"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] kill-a - Killed run card (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] kill-a - Killed run card (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json '[]' > "$case_dir/board.json"
@@ -1285,12 +1362,12 @@ pass "a run killed mid-write keeps its created card and resumes cleanly"
 case_dir="$TMP_ROOT/bounded-mutation"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## In flight
-- [ ] bounded-task - Bounded mutation (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] bounded-task - Bounded mutation (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json "$(jq -n --argjson a "$(draft_item bounded-item bounded-draft bounded-task 'Bounded mutation' 'x' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
@@ -1312,12 +1389,12 @@ pass "a delayed board mutation is bounded and remains retryable"
 case_dir="$TMP_ROOT/watcher-trigger"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] watcher-task - Reaches the board automatically (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] watcher-task - Reaches the board automatically (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json '[]' > "$case_dir/board.json"
@@ -1339,13 +1416,18 @@ FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_BOOTSTRAP_NETWORK=skip \
   || fail "bootstrap did not install the Helm board poll check"
 [ -s "$case_dir/home/state/helm-board.check-trust" ] \
   || fail "bootstrap did not authenticate the Helm board poll check"
+[ -x "$case_dir/home/state/helm-reconcile.check.sh" ] \
+  || fail "bootstrap did not install the Helm reconciliation check"
+[ -s "$case_dir/home/state/helm-reconcile.check-trust" ] \
+  || fail "bootstrap did not authenticate the Helm reconciliation check"
 pass "bootstrap arms the authenticated Helm watcher checks"
 
 rm -f "$case_dir/home/config/helm.json"
 override_state="$case_dir/override-state"
 mkdir -p "$override_state"
 mv "$case_dir/home/state/helm-sync.check.sh" "$case_dir/home/state/helm-sync.check-trust" \
-  "$case_dir/home/state/helm-board.check.sh" "$case_dir/home/state/helm-board.check-trust" "$override_state/"
+  "$case_dir/home/state/helm-board.check.sh" "$case_dir/home/state/helm-board.check-trust" \
+  "$case_dir/home/state/helm-reconcile.check.sh" "$case_dir/home/state/helm-reconcile.check-trust" "$override_state/"
 FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$override_state" FM_BOOTSTRAP_NETWORK=skip \
   PATH="$fb:$PATH" "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1 \
   || fail "bootstrap could not retire overridden Helm watcher checks"
@@ -1353,12 +1435,51 @@ FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$override_s
   || fail "bootstrap did not retire the overridden Helm sync check"
 [ ! -e "$override_state/helm-board.check.sh" ] && [ ! -e "$override_state/helm-board.check-trust" ] \
   || fail "bootstrap did not retire the overridden Helm board check"
+[ ! -e "$override_state/helm-reconcile.check.sh" ] && [ ! -e "$override_state/helm-reconcile.check-trust" ] \
+  || fail "bootstrap did not retire the overridden Helm reconciliation check"
 pass "bootstrap retires Helm checks from the overridden state directory"
+
+# A project registered after the default board's Project field was last set
+# up has no option there yet; the sync must provision it instead of silently
+# never creating the card (bin/fm-helm-lib.sh's fm_helm_ensure_field_options).
+case_dir="$TMP_ROOT/unmapped-project-provisioning"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/projects.md" <<'EOF'
+# Projects
+
+- gamma [no-mistakes] - test project (added 2026-09-01)
+EOF
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] gamma-task - New project card (repo: gamma) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+out=$(run_sync "$case_dir" "$fb") || fail "sync with an unmapped registered project exited nonzero: $out"
+assert_contains "$out" "fm-helm-sync: synchronized" "sync did not finish after provisioning: $out"
+grep -F 'updateProjectV2Field' "$case_dir/gh.log" >/dev/null \
+  || fail "sync did not provision the missing Project option"
+grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null \
+  || fail "sync did not create the card once the Project option existed"
+grep -F 'optionId=gamma-project' "$case_dir/gh.log" >/dev/null \
+  || fail "the new card was not tagged with the newly provisioned Project option"
+jq -e '.data.user.projectV2.fields.nodes[] | select(.name == "Project") | .options[] | select(.name == "gamma")' \
+  "$case_dir/board-state.json" >/dev/null \
+  || fail "the provisioned option was not persisted on the board"
+jq -e '.data.user.projectV2.fields.nodes[] | select(.name == "Project") | .options[] | select(.name == "fixture-firstmate")' \
+  "$case_dir/board-state.json" >/dev/null \
+  || fail "provisioning a new option dropped an option already in use"
+pass "an unmapped registered project's missing Project option is provisioned, not silently dropped"
 
 case_dir="$TMP_ROOT/watcher-diagnostic"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
@@ -1381,7 +1502,7 @@ pass "watcher adapter retains unsupported projects in the other bucket without w
 case_dir="$TMP_ROOT/unsupported-repo-debounce"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
@@ -1408,7 +1529,7 @@ cat > "$case_dir/home/data/backlog.md" <<'EOF'
 
 ## Queued
 - [ ] debounce-task - Must not disappear (repo: repo-prefix	repo-suffix) (kind: ship) (since: 2026-09-09)
-- [ ] unrelated-task - Elsewhere entirely (repo: firstmate) (kind: ship) (since: 2026-09-10)
+- [ ] unrelated-task - Elsewhere entirely (repo: fixture-firstmate) (kind: ship) (since: 2026-09-10)
 ## Done
 EOF
 out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "unrelated-task replan exited nonzero: $out"
@@ -1425,7 +1546,7 @@ cat > "$case_dir/home/data/backlog.md" <<'EOF'
 
 ## Queued
 - [ ] debounce-task - Must not disappear (repo: another-unrecognised-project) (kind: ship) (since: 2026-09-09)
-- [ ] unrelated-task - Elsewhere entirely (repo: firstmate) (kind: ship) (since: 2026-09-10)
+- [ ] unrelated-task - Elsewhere entirely (repo: fixture-firstmate) (kind: ship) (since: 2026-09-10)
 ## Done
 EOF
 out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "changed repo: value run exited nonzero: $out"
@@ -1442,12 +1563,12 @@ pass "a task's repo: value changing to a new unsupported value re-fires the note
 case_dir="$TMP_ROOT/watcher-lock-contention"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
 fb=$(install_fakes "$case_dir")
-printf '{"owner":"geojitsu","number":2}\n' > "$case_dir/home/config/helm.json"
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
 cat > "$case_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] lock-task - Reaches the board while another sync holds the lock (repo: firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] lock-task - Reaches the board while another sync holds the lock (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
 ## Done
 EOF
 board_json '[]' > "$case_dir/board.json"
@@ -1473,12 +1594,12 @@ for mode in no-config noauth scope network; do
   cd_dir="$TMP_ROOT/fail-$mode"
   mkdir -p "$cd_dir/home/config" "$cd_dir/home/data" "$cd_dir/home/state"
   fbx=$(install_fakes "$cd_dir")
-  [ "$mode" = no-config ] || printf '{"owner":"geojitsu","number":2}\n' > "$cd_dir/home/config/helm.json"
+  [ "$mode" = no-config ] || printf '{"owner":"fixture-owner","number":999}\n' > "$cd_dir/home/config/helm.json"
   cat > "$cd_dir/home/data/backlog.md" <<'EOF'
 # Backlog
 
 ## Queued
-- [ ] f-task - F (repo: firstmate) (kind: ship) (since: 2026-09-05)
+- [ ] f-task - F (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
 ## Done
 EOF
   board_json "$(jq -n --argjson a "$(draft_item f-item f-draft f-task 'F' 'x' Queued queued-status P3 p3-priority)" '[$a]')" > "$cd_dir/board.json"

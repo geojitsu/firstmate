@@ -1124,9 +1124,10 @@ EOF
 # surface as durable check wakes.  The sync itself aggregates local secondmate
 # backlogs, so a secondmate needs no competing board writer or copied config.
 helm_watch_setup() {
-  local sync_shim board_shim sync_body board_body
+  local sync_shim board_shim reconcile_shim sync_body board_body reconcile_body
   sync_shim="$STATE/helm-sync.check.sh"
   board_shim="$STATE/helm-board.check.sh"
+  reconcile_shim="$STATE/helm-reconcile.check.sh"
 
   if [ ! -f "$CONFIG/helm.json" ]; then
     if [ -e "$sync_shim" ] || [ -L "$sync_shim" ] || [ -e "$STATE/helm-sync.check-trust" ] || [ -L "$STATE/helm-sync.check-trust" ]; then
@@ -1138,6 +1139,11 @@ helm_watch_setup() {
       FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
         "$SCRIPT_DIR/fm-check-unregister.sh" helm-board >/dev/null 2>&1 \
         || echo "HELM: could not retire Helm watcher board poll"
+    fi
+    if [ -e "$reconcile_shim" ] || [ -L "$reconcile_shim" ] || [ -e "$STATE/helm-reconcile.check-trust" ] || [ -L "$STATE/helm-reconcile.check-trust" ]; then
+      FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
+        "$SCRIPT_DIR/fm-check-unregister.sh" helm-reconcile >/dev/null 2>&1 \
+        || echo "HELM: could not retire Helm watcher reconciliation"
     fi
     return 0
   fi
@@ -1153,16 +1159,26 @@ EOF
 exec "$FM_ROOT/bin/fm-helm-poll.sh"
 EOF
 )
+  reconcile_body=$(cat <<EOF
+#!/usr/bin/env bash
+exec "$FM_ROOT/bin/fm-helm-reconcile.sh"
+EOF
+)
   x_mode_write_if_changed "$sync_shim" "$sync_body" 700 \
     || { echo "HELM: could not arm Helm watcher sync"; return 0; }
   x_mode_write_if_changed "$board_shim" "$board_body" 700 \
     || { echo "HELM: could not arm Helm watcher board poll"; return 0; }
+  x_mode_write_if_changed "$reconcile_shim" "$reconcile_body" 700 \
+    || { echo "HELM: could not arm Helm watcher reconciliation"; return 0; }
   FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
     "$SCRIPT_DIR/fm-check-register.sh" helm-sync >/dev/null 2>&1 \
     || echo "HELM: could not arm Helm watcher sync"
   FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
     "$SCRIPT_DIR/fm-check-register.sh" helm-board >/dev/null 2>&1 \
     || echo "HELM: could not arm Helm watcher board poll"
+  FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-check-register.sh" helm-reconcile >/dev/null 2>&1 \
+    || echo "HELM: could not arm Helm watcher reconciliation"
 }
 
 crew_dispatch_validate() {
