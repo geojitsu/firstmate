@@ -255,8 +255,13 @@ map_link() {
   mv -f -- "$TMP_DIR/map.next" "$TMP_DIR/map.json"
   map_publish || fail "could not publish data/helm-project-map.json"
   printf 'linked: %s -> %s/%s "%s"\n' "$project" "$BOARD_OWNER" "$BOARD_NUMBER" "$BOARD_TITLE"
-  printf 'link changes future cards only; use move %s --existing %s/%s --yes to relocate existing cards.\n' \
-    "$project" "$BOARD_OWNER" "$BOARD_NUMBER"
+  if [ -n "$prior_owner" ] && [ -n "$prior_number" ] && [ "$prior_owner/$prior_number" != "$BOARD_OWNER/$BOARD_NUMBER" ]; then
+    printf 'link changes future cards only; existing cards remain on %s/%s until you run move %s --existing %s/%s --yes to relocate them.\n' \
+      "$prior_owner" "$prior_number" "$project" "$BOARD_OWNER" "$BOARD_NUMBER"
+  else
+    printf 'link changes future cards only; use move %s --existing %s/%s --yes to relocate existing cards.\n' \
+      "$project" "$BOARD_OWNER" "$BOARD_NUMBER"
+  fi
   map_release_lock || fail "could not release the Helm routing lock"
   if [ -n "$prior_owner" ] && [ -n "$prior_number" ] && [ "$prior_owner/$prior_number" != "$BOARD_OWNER/$BOARD_NUMBER" ]; then
     FM_HELM_RETAIN_BOARD="$prior_owner/$prior_number" FM_HELM_RETAIN_PROJECT="$project" "$SCRIPT_DIR/fm-helm-sync.sh" || true
@@ -487,6 +492,9 @@ map_move() {
     board_view "$BOARD_OWNER" "$BOARD_NUMBER" || fail "migration destination $BOARD_OWNER/$BOARD_NUMBER does not resolve"
     printf 'resuming confirmed move for %s -> %s/%s\n' "$project" "$BOARD_OWNER" "$BOARD_NUMBER"
     yes=1
+    ids="$TMP_DIR/task-ids"
+    backlog_task_ids "$project" "$ids"
+    MOVE_TASKS=$(cat -- "$ids")
   else
     project_registered "$project" || fail "local project '$project' is not registered in data/projects.md"
     shift 2
@@ -500,10 +508,25 @@ map_move() {
       esac
       shift
     done
-    source_owner=$(printf '%s\n' "$entry" | jq -r '.owner // empty')
-    source_number=$(printf '%s\n' "$entry" | jq -r '.number // empty')
-    [ -n "$source_owner" ] || source_owner=$DEFAULT_OWNER
-    [ -n "$source_number" ] || source_number=$DEFAULT_NUMBER
+    ids="$TMP_DIR/task-ids"
+    backlog_task_ids "$project" "$ids"
+    MOVE_TASKS=$(cat -- "$ids")
+    # A just-completed link/unlink already points the routing entry at the
+    # destination; the project's cards are still sitting wherever the cache
+    # last indexed them, so that identity (not the entry) is the real source.
+    source_owner=
+    source_number=
+    if [ -f "$CARDS_FILE" ] && [ -s "$ids" ]; then
+      IFS=$'\t' read -r source_owner source_number < <(awk -F '\t' -v ids_file="$ids" '
+        FILENAME == ids_file { wanted[$1] = 1; next }
+        NF >= 11 && wanted[$1] && $10 != "" && $11 != "" { print $10 "\t" $11; exit }' "$ids" "$CARDS_FILE")
+    fi
+    if [ -z "$source_owner" ] || [ -z "$source_number" ]; then
+      source_owner=$(printf '%s\n' "$entry" | jq -r '.owner // empty')
+      source_number=$(printf '%s\n' "$entry" | jq -r '.number // empty')
+      [ -n "$source_owner" ] || source_owner=$DEFAULT_OWNER
+      [ -n "$source_number" ] || source_number=$DEFAULT_NUMBER
+    fi
     if [ -n "$default_dest" ]; then
       BOARD_OWNER=$DEFAULT_OWNER; BOARD_NUMBER=$DEFAULT_NUMBER
       board_view "$BOARD_OWNER" "$BOARD_NUMBER" || fail "default Helm Project $BOARD_OWNER/$BOARD_NUMBER does not resolve"
@@ -517,9 +540,6 @@ map_move() {
     fi
   fi
   [ "$source_owner/$source_number" != "$BOARD_OWNER/$BOARD_NUMBER" ] || fail "source and destination boards are the same"
-  ids="$TMP_DIR/task-ids"
-  backlog_task_ids "$project" "$ids"
-  MOVE_TASKS=$(cat -- "$ids")
   : >"$TMP_DIR/moves.tsv"
   [ -f "$MOVES_FILE" ] && [ ! -L "$MOVES_FILE" ] && cp -- "$MOVES_FILE" "$TMP_DIR/moves.tsv"
   if [ -f "$CARDS_FILE" ]; then
@@ -547,7 +567,7 @@ map_move() {
     awk -F '\t' -v discovered="$TMP_DIR/source-cards.tsv" -v owner="$source_owner" -v number="$source_number" -v now="$(date +%s)" '
       FILENAME == discovered { found[$1]=$0; next }
       {
-        if ($1 in found && $10 == owner && $11 == number) {
+        if ($1 in found) {
           split(found[$1], row, "\t")
           print $1 "\t" row[2] "\t" row[3] "\t" row[4] "\t\t\t\t\t" now "\t" owner "\t" number
           written[$1]=1
@@ -611,7 +631,12 @@ map_unlink() {
   mv -f -- "$TMP_DIR/map.next" "$TMP_DIR/map.json"
   map_publish || fail "could not publish data/helm-project-map.json"
   printf 'unlinked: %s -> default Helm board %s/%s\n' "$project" "$DEFAULT_OWNER" "$DEFAULT_NUMBER"
-  printf 'unlink changes future cards only; use move %s --default --yes to relocate existing cards.\n' "$project"
+  if [ -n "$prior_owner" ] && [ -n "$prior_number" ] && [ "$prior_owner/$prior_number" != "$DEFAULT_OWNER/$DEFAULT_NUMBER" ]; then
+    printf 'unlink changes future cards only; existing cards remain on %s/%s until you run move %s --default --yes to relocate them.\n' \
+      "$prior_owner" "$prior_number" "$project"
+  else
+    printf 'unlink changes future cards only; use move %s --default --yes to relocate existing cards.\n' "$project"
+  fi
   map_release_lock || fail "could not release the Helm routing lock"
   if [ -n "$prior_owner" ] && [ -n "$prior_number" ] && [ "$prior_owner/$prior_number" != "$DEFAULT_OWNER/$DEFAULT_NUMBER" ]; then
     FM_HELM_RETAIN_BOARD="$prior_owner/$prior_number" FM_HELM_RETAIN_PROJECT="$project" "$SCRIPT_DIR/fm-helm-sync.sh" || true
