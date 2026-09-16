@@ -564,8 +564,9 @@ grep -F $'marker-task\tmarker-item\t' "$marker_dir/home/state/helm-cards.tsv" >/
 board_json "$(jq -n --argjson item "$(draft_item marker-item marker-draft other-marker 'Marker task' 'x' Queued queued-status P3 p3-priority)" '[$item]')" > "$marker_dir/board.json"
 : > "$marker_dir/gh.log"
 run_sync "$marker_dir" "$marker_fb" --force >/dev/null 2>&1 || fail "stale-marker follow-up run failed"
-grep -qF 'addProjectV2DraftIssue' "$marker_dir/gh.log" && grep -qF 'title=Marker task' "$marker_dir/gh.log" \
-  || fail "a same-board card that lost its task marker was silently retained instead of recreated"
+if ! grep -qF 'addProjectV2DraftIssue' "$marker_dir/gh.log" || ! grep -qF 'title=Marker task' "$marker_dir/gh.log"; then
+  fail "a same-board card that lost its task marker was silently retained instead of recreated"
+fi
 pass "a same-board card that loses its task marker is recreated, not silently retained"
 
 held_delete_dir="$TMP_ROOT/delete-already-held"
