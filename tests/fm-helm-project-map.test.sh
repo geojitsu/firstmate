@@ -462,6 +462,13 @@ grep -F 'name0=other' "$case_dir/gh-axi.log" >/dev/null \
 jq -e '.projects.alpha.number == 998 and .projects.beta.number == 998 and .projects.beta.state == "active"' \
   "$case_dir/home/data/helm-project-map.json" >/dev/null \
   || fail "a second project did not join the first project's board in the mapping"
+FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 FM_HELM_BOARD_JSON="$case_dir/board.json" PATH="$fb:$PATH" \
+  FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  "$MAP" link alpha --existing fixture-org/998 >/dev/null 2>&1 \
+  || fail "relinking a project to its current board exited nonzero"
+jq -e '.retention == null' "$case_dir/home/data/helm-project-map.json" >/dev/null \
+  || fail "a no-op link left pending retention"
 pass "linking a second project onto an already-linked board provisions its option instead of refusing"
 
 # Reconciliation covers two sides of a broken mapping through the existing

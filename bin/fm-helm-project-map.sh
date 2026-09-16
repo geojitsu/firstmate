@@ -250,7 +250,7 @@ map_link() {
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   jq --arg p "$project" --arg owner "$BOARD_OWNER" --argjson number "$BOARD_NUMBER" --arg prior_owner "$prior_owner" --argjson prior_number "${prior_number:-0}" \
     --arg title "$BOARD_TITLE" --arg url "$BOARD_URL" --arg now "$now" \
-    '.projects[$p] = {owner:$owner,number:$number,title:$title,url:$url,state:"active",linked_at:$now,move:null,orphan_hold_task:null} | .nudges |= del(.[$p]) | if $prior_owner != "" and $prior_number > 0 then .retention = {project:$p,owner:$prior_owner,number:$prior_number} else . end' \
+    '.projects[$p] = {owner:$owner,number:$number,title:$title,url:$url,state:"active",linked_at:$now,move:null,orphan_hold_task:null} | .nudges |= del(.[$p]) | if $prior_owner != "" and $prior_number > 0 and ($prior_owner != $owner or $prior_number != $number) then .retention = {project:$p,owner:$prior_owner,number:$prior_number} else . end' \
     "$TMP_DIR/map.json" >"$TMP_DIR/map.next" || fail "could not prepare the Helm routing entry"
   mv -f -- "$TMP_DIR/map.next" "$TMP_DIR/map.json"
   map_publish || fail "could not publish data/helm-project-map.json"
@@ -425,7 +425,10 @@ move_execute() {
     [ -n "$task" ] || continue
     case $'\n'$MOVE_TASKS$'\n' in
       *$'\n'"$task"$'\n'*) ;;
-      *) continue ;;
+      *)
+        [ "$phase" = complete ] || printf 'fm-helm-project-map: %s is no longer in the backlog; re-add it or manually clean up state/helm-moves.tsv before resuming its move\n' "$task" >&2
+        continue
+        ;;
     esac
     [ "$phase" = complete ] && continue
     if [ "$phase" = pending ]; then
