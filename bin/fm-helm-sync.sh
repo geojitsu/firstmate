@@ -503,6 +503,26 @@ graphql_mutation() {
   jq -e '(.errors // []) | length == 0' "$TMP_RESPONSE" >/dev/null 2>&1
 }
 
+# helm_graphql_call <field-args...> - the bounded `gh api graphql` call
+# fm_helm_ensure_field_options uses to provision a missing Project option on
+# the current board. Requires SYNC_DEADLINE to already be set for that board.
+helm_graphql_call() {
+  local remaining
+  remaining=$(( SYNC_DEADLINE - $(date +%s) ))
+  [ "$remaining" -gt 0 ] || return 1
+  run_gh_bounded "$remaining" gh api graphql "$@"
+}
+
+# missing_project_options <board-json> <desired-json> - print the comma
+# joined desired Project names this board's Project field has no option for.
+missing_project_options() {
+  jq -r --slurpfile records "$2" '
+    ($records[0] | map(.desired.project) | unique) as $wanted
+    | [.data.user.projectV2.fields.nodes[]? | select(.name == "Project" and .__typename == "ProjectV2SingleSelectField") | .options[]?.name] as $have
+    | ($wanted - $have) | join(",")
+  ' "$1"
+}
+
 US=$'\037'
 RS=$'\036'
 SPLIT=()
@@ -899,7 +919,7 @@ publish_board_failure_wakes() {
 
 process_board() {
   local owner=$1 number=$2 key="$1/$2" board_file group_desired
-  local board_now board_budget schema_ok
+  local board_now board_budget schema_ok missing_projects
   BOARD_WRITE_FAILURE=0
   BOARD_OWNER=$owner
   BOARD_NUMBER=$number
@@ -940,7 +960,13 @@ process_board() {
                    or (($historical | index($record.id)) != null)))' \
     "$DESIRED_JSON" >"$group_desired" \
     || helm_fail_open "could not group desired Helm cards"
-  schema_ok=$(jq -e --argjson records "$(cat "$group_desired")" --arg dispatch "$DISPATCH_STATUS" '
+  # One jq pass computes both the base-schema verdict and any Project options
+  # a registered-but-unmapped project's card needs (fm_helm_desired_program's
+  # project_of puts its own name in the Project bucket, and the board's
+  # Project field may not have that option yet) so the per-board hot path
+  # stays a single jq call, same as before this check grew a second part.
+  schema_ok=false missing_projects=
+  IFS=$'\t' read -r schema_ok missing_projects < <(jq -r --argjson records "$(cat "$group_desired")" --arg dispatch "$DISPATCH_STATUS" '
     .data.user.projectV2.fields.nodes as $fields
     | (def has_option($field; $name): any($fields[]; .name == $field and .__typename == "ProjectV2SingleSelectField" and any(.options[]?; .name == $name));
        any($fields[]; .name == "Status" and .__typename == "ProjectV2SingleSelectField")
@@ -949,13 +975,39 @@ process_board() {
        and any($fields[]; .name == "Priority" and .__typename == "ProjectV2SingleSelectField")
        and all((["Queued", "In flight", "Waiting on you", "Done", $dispatch] | unique)[]; has_option("Status"; .))
        and all(["P0", "P1", "P2", "P3", "P4"][]; has_option("Priority"; .))
-       and all(["ship", "investigation", "decision"][]; has_option("Kind"; .))
-       and all($records[]; has_option("Project"; .desired.project)))
-  ' "$BOARD_JSON" 2>/dev/null) || schema_ok=
+       and all(["ship", "investigation", "decision"][]; has_option("Kind"; .))) as $ok
+    | ([$fields[] | select(.name == "Project" and .__typename == "ProjectV2SingleSelectField") | .options[]?.name]) as $have
+    | [$ok, (($records | map(.desired.project) | unique) - $have | join(","))] | @tsv
+  ' "$BOARD_JSON" 2>/dev/null)
   if [ "$schema_ok" != true ]; then
     board_failure "$key" "required Helm fields or options are unavailable"
     publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
     return 0
+  fi
+  if [ -n "$missing_projects" ]; then
+    if ! fm_helm_ensure_field_options helm_graphql_call "$PROJECT_ID" Project "$missing_projects"; then
+      board_failure "$key" "could not provision the Project field option for $missing_projects"
+      publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
+      return 0
+    fi
+    BOARD_READ_SEQUENCE=$((BOARD_READ_SEQUENCE + 1))
+    if ! read_board "$owner" "$number" "$board_file"; then
+      board_failure "$key" "GitHub project re-read after provisioning failed"
+      publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
+      return 0
+    fi
+    BOARD_JSON="$board_file"
+    PROJECT_ID=$(jq -r '.data.user.projectV2.id' "$BOARD_JSON")
+    STATUS_FIELD_ID=$(field_id Status)
+    PROJECT_FIELD_ID=$(field_id Project)
+    KIND_FIELD_ID=$(field_id Kind)
+    PRIORITY_FIELD_ID=$(field_id Priority)
+    DISPATCH_OPTION_ID=$(option_id Status "$DISPATCH_STATUS")
+    if [ -n "$(missing_project_options "$BOARD_JSON" "$group_desired")" ]; then
+      board_failure "$key" "Project field option for $missing_projects is still missing after provisioning"
+      publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
+      return 0
+    fi
   fi
   PLAN="$TMP_DIR/plan-$BOARD_INDEX.nul"
   jq -j --slurpfile desired "$group_desired" \

@@ -186,10 +186,24 @@ if [ "\${1:-}" = api ]; then
       ]}}}}' ;;
     *'fields(first:100)'* )
       jq -n '{data:{node:{fields:{nodes:[
-        {__typename:"ProjectV2SingleSelectField",id:"dest-status-field",name:"Status",options:[{id:"dest-queued-status",name:"Queued"}]},
-        {__typename:"ProjectV2SingleSelectField",id:"dest-priority-field",name:"Priority",options:[{id:"dest-p3-priority",name:"P3"}]},
-        {__typename:"ProjectV2SingleSelectField",id:"dest-kind-field",name:"Kind",options:[{id:"dest-ship-kind",name:"ship"}]},
-        {__typename:"ProjectV2SingleSelectField",id:"dest-project-field",name:"Project",options:[{id:"dest-alpha-project",name:"alpha"}]}
+        {__typename:"ProjectV2SingleSelectField",id:"dest-status-field",name:"Status",options:[
+          {id:"dest-queued-status",name:"Queued",color:"GRAY",description:""},
+          {id:"dest-flight-status",name:"In flight",color:"GRAY",description:""},
+          {id:"dest-waiting-status",name:"Waiting on you",color:"GRAY",description:""},
+          {id:"dest-done-status",name:"Done",color:"GRAY",description:""}]},
+        {__typename:"ProjectV2SingleSelectField",id:"dest-priority-field",name:"Priority",options:[
+          {id:"dest-p0-priority",name:"P0",color:"GRAY",description:""},
+          {id:"dest-p1-priority",name:"P1",color:"GRAY",description:""},
+          {id:"dest-p2-priority",name:"P2",color:"GRAY",description:""},
+          {id:"dest-p3-priority",name:"P3",color:"GRAY",description:""},
+          {id:"dest-p4-priority",name:"P4",color:"GRAY",description:""}]},
+        {__typename:"ProjectV2SingleSelectField",id:"dest-kind-field",name:"Kind",options:[
+          {id:"dest-ship-kind",name:"ship",color:"GRAY",description:""},
+          {id:"dest-investigation-kind",name:"investigation",color:"GRAY",description:""},
+          {id:"dest-decision-kind",name:"decision",color:"GRAY",description:""}]},
+        {__typename:"ProjectV2SingleSelectField",id:"dest-project-field",name:"Project",options:[
+          {id:"dest-other-project",name:"other",color:"GRAY",description:""},
+          {id:"dest-alpha-project",name:"alpha",color:"GRAY",description:""}]}
       ]}}}}' ;;
     *addProjectV2DraftIssue*) jq -n '{data:{addProjectV2DraftIssue:{projectItem:{id:"moved-item"}}}}' ;;
     *) jq -n '{data:{}}' ;;
@@ -270,6 +284,95 @@ grep -F $'alpha-task\tfixture-owner\t999\told-item\tfixture-org\t998\tmoved-item
   "$case_dir/home/state/helm-moves.tsv" >/dev/null \
   || fail "move ledger did not retain its complete add/delete history"
 pass "confirmed moves preserve card history in the resumable ledger"
+
+# Linking a second project onto a board another project already linked must
+# add the missing Project option, not refuse the board as "incomplete"
+# (spec decision 6: several mapping entries sharing one board is normal).
+case_dir="$TMP_ROOT/shared-board-link"
+seed_home "$case_dir"
+write_empty_board "$case_dir/board.json"
+jq -n '{version:1,projects:{alpha:{owner:"fixture-org",number:998,title:"Shared Board",state:"active",linked_at:"2026-09-10T00:00:00Z",move:null,orphan_hold_task:null}},nudges:{}}' \
+  >"$case_dir/home/data/helm-project-map.json"
+fb=$(fm_fakebin "$case_dir")
+cat >"$fb/gh-axi" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'fake-gh-axi ' >>"$FM_HELM_GH_AXI_LOG"
+printf '%s' "$*" | tr '\n' ' ' >>"$FM_HELM_GH_AXI_LOG"
+printf '\n' >>"$FM_HELM_GH_AXI_LOG"
+if [ "${1:-}" = project ] && [ "${2:-}" = view ]; then
+  printf '%s\n' 'id: shared-board' 'title: Shared Board' 'url: https://github.com/orgs/fixture-org/projects/998'
+  exit 0
+fi
+if [ "${1:-}" = project ] && [ "${2:-}" = item-list ]; then exit 0; fi
+if [ "${1:-}" = api ]; then
+  case "$*" in
+    *'node(id:$projectId)'*)
+      jq -n '{data:{node:{fields:{nodes:[
+        {__typename:"ProjectV2SingleSelectField",id:"status-field",name:"Status",options:[
+          {id:"queued-status",name:"Queued",color:"GRAY",description:""},
+          {id:"flight-status",name:"In flight",color:"GRAY",description:""},
+          {id:"waiting-status",name:"Waiting on you",color:"GRAY",description:""},
+          {id:"done-status",name:"Done",color:"GRAY",description:""}]},
+        {__typename:"ProjectV2SingleSelectField",id:"priority-field",name:"Priority",options:[
+          {id:"p0-priority",name:"P0",color:"GRAY",description:""},{id:"p1-priority",name:"P1",color:"GRAY",description:""},
+          {id:"p2-priority",name:"P2",color:"GRAY",description:""},{id:"p3-priority",name:"P3",color:"GRAY",description:""},
+          {id:"p4-priority",name:"P4",color:"GRAY",description:""}]},
+        {__typename:"ProjectV2SingleSelectField",id:"kind-field",name:"Kind",options:[
+          {id:"ship-kind",name:"ship",color:"GRAY",description:""},{id:"investigation-kind",name:"investigation",color:"GRAY",description:""},
+          {id:"decision-kind",name:"decision",color:"GRAY",description:""}]},
+        {__typename:"ProjectV2SingleSelectField",id:"project-field",name:"Project",options:[
+          {id:"other-project",name:"other",color:"GRAY",description:""},
+          {id:"alpha-project",name:"alpha",color:"GRAY",description:""}]}
+      ]}}}}' ;;
+    *createProjectV2Field*|*updateProjectV2Field*)
+      declare -A opt_name=()
+      for arg in "$@"; do
+        case "$arg" in
+          name[0-9]*=*) idx=${arg%%=*}; idx=${idx#name}; opt_name[$idx]=${arg#*=} ;;
+        esac
+      done
+      options='[]'
+      for idx in "${!opt_name[@]}"; do
+        options=$(jq -c --arg name "${opt_name[$idx]}" '. + [{name:$name}]' <<<"$options")
+      done
+      jq -n --argjson options "$options" '{data:{updateProjectV2Field:{projectV2Field:{options:$options}}}}' ;;
+    *) jq -n '{data:{}}' ;;
+  esac
+  exit 0
+fi
+exit 1
+SH
+cat >"$fb/gh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'fake-gh ' >>"$FM_HELM_GH_LOG"
+printf '%s' "$*" | tr '\n' ' ' >>"$FM_HELM_GH_LOG"
+printf '\n' >>"$FM_HELM_GH_LOG"
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  printf "%s\n" "Token scopes: 'project', 'repo'"
+  exit 0
+fi
+if [ "${1:-}" = api ]; then cat "$FM_HELM_BOARD_JSON"; exit 0; fi
+exit 1
+SH
+chmod +x "$fb/gh-axi" "$fb/gh"
+assert_fake_tools "$fb"
+mkdir -p "$case_dir/gh-config"
+: >"$case_dir/gh-axi.log"; : >"$case_dir/gh.log"
+FM_HELM_GH_AXI_LOG="$case_dir/gh-axi.log" FM_HELM_GH_LOG="$case_dir/gh.log" \
+  GH_CONFIG_DIR="$case_dir/gh-config" GH_HOST=127.0.0.1:9 FM_HELM_BOARD_JSON="$case_dir/board.json" PATH="$fb:$PATH" \
+  FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  "$MAP" link beta --existing fixture-org/998 >/dev/null 2>&1 \
+  || fail "linking a second project onto an already-linked board exited nonzero"
+grep -F 'updateProjectV2Field' "$case_dir/gh-axi.log" >/dev/null \
+  || fail "link did not provision the missing Project option on the shared board"
+grep -F 'name0=other' "$case_dir/gh-axi.log" >/dev/null \
+  || fail "provisioning the shared board's Project field dropped its existing 'other' option"
+jq -e '.projects.alpha.number == 998 and .projects.beta.number == 998 and .projects.beta.state == "active"' \
+  "$case_dir/home/data/helm-project-map.json" >/dev/null \
+  || fail "a second project did not join the first project's board in the mapping"
+pass "linking a second project onto an already-linked board provisions its option instead of refusing"
 
 # Reconciliation covers two sides of a broken mapping through the existing
 # captain-hold path: a board that disappeared and a local project that left the

@@ -95,6 +95,36 @@ if [ "${1:-}" = api ]; then
   fi
   [ -z "${FM_FAKE_GH_LATENCY:-}" ] || sleep "$FM_FAKE_GH_LATENCY"
   case "$*" in
+    *'node(id:$projectId)'*)
+      jq '{data:{node:{fields:{nodes:.data.user.projectV2.fields.nodes}}}}' "$FM_FAKE_BOARD_STATE" ;;
+    *createProjectV2Field*|*updateProjectV2Field*)
+      declare -A opt_name=() opt_color=()
+      fname=; field_id_arg=
+      for arg in "$@"; do
+        case "$arg" in
+          fname=*) fname=${arg#fname=} ;;
+          fieldId=*) field_id_arg=${arg#fieldId=} ;;
+          name[0-9]*=*) idx=${arg%%=*}; idx=${idx#name}; opt_name[$idx]=${arg#*=} ;;
+          color[0-9]*=*) idx=${arg%%=*}; idx=${idx#color}; opt_color[$idx]=${arg#*=} ;;
+        esac
+      done
+      options_json='[]'
+      for idx in "${!opt_name[@]}"; do
+        name=${opt_name[$idx]}; color=${opt_color[$idx]:-GRAY}
+        options_json=$(jq -c --arg id "${name}-project" --arg name "$name" --arg color "$color" \
+          '. + [{id:$id,name:$name,color:$color,description:""}]' <<<"$options_json")
+      done
+      if [ -n "$field_id_arg" ]; then
+        jq --arg fid "$field_id_arg" --argjson options "$options_json" \
+          '.data.user.projectV2.fields.nodes |= map(if .id == $fid then .options = $options else . end)' \
+          "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+      else
+        jq --arg name "$fname" --argjson options "$options_json" \
+          '.data.user.projectV2.fields.nodes += [{__typename:"ProjectV2SingleSelectField",id:($name+"-field"),name:$name,options:$options}]' \
+          "$FM_FAKE_BOARD_STATE" > "$FM_FAKE_BOARD_STATE.next" && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
+      fi
+      jq -n --argjson options "$options_json" \
+        '{data:{updateProjectV2Field:{projectV2Field:{options:$options}},createProjectV2Field:{projectV2Field:{options:$options}}}}' ;;
     *addProjectV2DraftIssue*)
       for arg in "$@"; do
         case "$arg" in
@@ -1382,6 +1412,43 @@ FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$override_s
 [ ! -e "$override_state/helm-reconcile.check.sh" ] && [ ! -e "$override_state/helm-reconcile.check-trust" ] \
   || fail "bootstrap did not retire the overridden Helm reconciliation check"
 pass "bootstrap retires Helm checks from the overridden state directory"
+
+# A project registered after the default board's Project field was last set
+# up has no option there yet; the sync must provision it instead of silently
+# never creating the card (bin/fm-helm-lib.sh's fm_helm_ensure_field_options).
+case_dir="$TMP_ROOT/unmapped-project-provisioning"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/projects.md" <<'EOF'
+# Projects
+
+- gamma [no-mistakes] - test project (added 2026-09-01)
+EOF
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] gamma-task - New project card (repo: gamma) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+out=$(run_sync "$case_dir" "$fb") || fail "sync with an unmapped registered project exited nonzero: $out"
+assert_contains "$out" "fm-helm-sync: synchronized" "sync did not finish after provisioning: $out"
+grep -F 'updateProjectV2Field' "$case_dir/gh.log" >/dev/null \
+  || fail "sync did not provision the missing Project option"
+grep -F 'addProjectV2DraftIssue' "$case_dir/gh.log" >/dev/null \
+  || fail "sync did not create the card once the Project option existed"
+grep -F 'optionId=gamma-project' "$case_dir/gh.log" >/dev/null \
+  || fail "the new card was not tagged with the newly provisioned Project option"
+jq -e '.data.user.projectV2.fields.nodes[] | select(.name == "Project") | .options[] | select(.name == "gamma")' \
+  "$case_dir/board-state.json" >/dev/null \
+  || fail "the provisioned option was not persisted on the board"
+jq -e '.data.user.projectV2.fields.nodes[] | select(.name == "Project") | .options[] | select(.name == "fixture-firstmate")' \
+  "$case_dir/board-state.json" >/dev/null \
+  || fail "provisioning a new option dropped an option already in use"
+pass "an unmapped registered project's missing Project option is provisioned, not silently dropped"
 
 case_dir="$TMP_ROOT/watcher-diagnostic"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"

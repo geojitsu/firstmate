@@ -47,3 +47,10 @@ move uses `state/helm-moves.tsv` and adds or creates the destination card before
 deleting the source card, so a crash leaves a resumable phase rather than an
 ambiguous relocation. Routing uses project identity from `data/projects.md`; it
 does not use checkout paths.
+
+When a board's Project field is missing an option a routed project needs -
+whether that is the shared default board gaining a newly registered project or
+a board another project already linked - `fm_helm_ensure_field_options`
+(`bin/fm-helm-lib.sh`) adds the missing option in place, carrying every
+existing option's id, color, and description forward unchanged so cards
+already set to it are undisturbed.

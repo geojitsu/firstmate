@@ -187,43 +187,25 @@ create_or_reuse_board() {  # <owner> <title> [existing-owner/number]
   esac
 }
 
-field_has_options() {  # <field-list> <field-name> <comma-separated-options>
-  local listing=$1 field=$2 options=$3 option
-  printf '%s\n' "$listing" | awk -v wanted="$field" '
-    $1 == "name:" && substr($0, index($0, $2)) == wanted { found = 1 }
-    END { exit(found ? 0 : 1) }' >/dev/null
-  while IFS= read -r option; do
-    [ -n "$option" ] || continue
-    printf '%s\n' "$listing" | awk -v wanted="$field" -v option="$option" '
-      $1 == "name:" { found = (substr($0, index($0, $2)) == wanted) }
-      found && $1 == "options:" { value = $0; if (index(value, option ":") > 0) ok=1; found=0 }
-      END { exit(ok ? 0 : 1) }' || return 1
-  done < <(printf '%s' "$options" | tr ',' '\n')
+# helm_graphql_call <field-args...> - the gh-axi invocation
+# fm_helm_ensure_field_options uses to read and provision Helm field schema.
+helm_graphql_call() {
+  gh-axi api graphql "$@"
 }
 
+# ensure_schema provisions every field Helm's cards need on the board this
+# script is currently linking or moving to ($BOARD_ID/$BOARD_OWNER/
+# $BOARD_NUMBER), including the Project option for $PROJECT_SCHEMA_OPTION.
+# A board a second project links onto already has a Project field with other
+# projects' options; fm_helm_ensure_field_options adds the missing option
+# there without disturbing the ones already in use (spec decision 6: sharing
+# one board across projects is normal, not an error to refuse).
 ensure_schema() {
-  local listing field options query option
-  listing=$(gh-axi project field-list "$BOARD_NUMBER" --owner "$BOARD_OWNER" --limit 100 2>&1) \
-    || fail "could not read Helm fields from $BOARD_OWNER/$BOARD_NUMBER"
+  local field options
+  [ -n "$BOARD_ID" ] || fail "GitHub Project $BOARD_OWNER/$BOARD_NUMBER has no id"
   while IFS='|' read -r field options; do
-    field_has_options "$listing" "$field" "$options" && continue
-    if printf '%s\n' "$listing" | awk -v wanted="$field" '$1 == "name:" && substr($0, index($0, $2)) == wanted { found=1 } END { exit(found ? 0 : 1) }'; then
-      fail "GitHub Project $BOARD_OWNER/$BOARD_NUMBER has an incomplete $field field; add the missing options before linking"
-    fi
-    [ -n "$BOARD_ID" ] || fail "GitHub Project $BOARD_OWNER/$BOARD_NUMBER has no id"
-    # shellcheck disable=SC2016 # GraphQL variables must remain literal.
-    query='mutation($projectId:ID!,$name:String!,$options:[String!]!){createProjectV2Field(input:{projectId:$projectId,dataType:SINGLE_SELECT,name:$name,singleSelectOptions:$options}){projectV2Field{id}}}'
-    set --
-    while IFS= read -r option; do
-      [ -n "$option" ] || continue
-      set -- "$@" --field "options[]=$option"
-    done < <(printf '%s' "$options" | tr ',' '\n')
-    gh-axi api graphql --field "query=$query" --field "projectId=$BOARD_ID" --field "name=$field" "$@" >/dev/null 2>&1 \
-      || fail "could not create Helm field $field on $BOARD_OWNER/$BOARD_NUMBER"
-    listing=$(gh-axi project field-list "$BOARD_NUMBER" --owner "$BOARD_OWNER" --limit 100 2>&1) \
-      || fail "could not verify Helm field $field on $BOARD_OWNER/$BOARD_NUMBER"
-    field_has_options "$listing" "$field" "$options" \
-      || fail "Helm field $field on $BOARD_OWNER/$BOARD_NUMBER is still incomplete"
+    fm_helm_ensure_field_options helm_graphql_call "$BOARD_ID" "$field" "$options" \
+      || fail "could not provision Helm field $field on $BOARD_OWNER/$BOARD_NUMBER"
   done < <(
     printf '%s\n' \
       'Status|Queued,In flight,Waiting on you,Done' \

@@ -138,6 +138,93 @@ fm_helm_project_names() {
   done | awk '!seen[$0]++'
 }
 
+# fm_helm_ensure_field_options <run-fn> <project-id> <field-name> <required-csv>
+#
+# Ensures GitHub Project <project-id>'s single-select field <field-name> has
+# every option named in the comma-separated <required-csv>. Creates the field
+# with the full required set when it does not exist yet; otherwise adds only
+# the options that are missing, carrying every already-present option's id,
+# color, and description forward unchanged so cards already set to it, and
+# its own display color, are undisturbed. Idempotent: a field that already
+# has every required option makes no GitHub call.
+#
+# <run-fn> is the name of a function the caller defines that runs
+# `gh-axi api graphql "$@"` (or an equivalently bounded wrapper) and prints
+# the raw JSON response; the singleSelectOptions GraphQL input requires a
+# non-null name/color/description per option, so every entry this function
+# sends carries all three even when only carrying an existing option forward.
+fm_helm_ensure_field_options() {
+  local run_fn=$1 project_id=$2 field=$3 required=$4
+  local detail response field_id existing name missing_csv
+  local -a have=() missing=() names=() ids=() colors=() descs=() args=()
+  # shellcheck disable=SC2016 # GraphQL variables must remain literal.
+  detail='query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{__typename ... on ProjectV2FieldCommon{id name} ... on ProjectV2SingleSelectField{id name options{id name color description}}}}}}}'
+  response=$("$run_fn" --field "query=$detail" --field "projectId=$project_id") || return 1
+  jq -e '(.errors // []) | length == 0' <<<"$response" >/dev/null 2>&1 || return 1
+  field_id=$(jq -r --arg f "$field" \
+    '[.data.node.fields.nodes[]? | select(.name == $f and .__typename == "ProjectV2SingleSelectField") | .id][0] // empty' \
+    <<<"$response")
+  existing=$(jq -c --arg f "$field" \
+    '[.data.node.fields.nodes[]? | select(.name == $f and .__typename == "ProjectV2SingleSelectField") | .options[]?]' \
+    <<<"$response")
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    have+=("$name")
+  done < <(jq -r '.[].name' <<<"$existing")
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if [ "${#have[@]}" -gt 0 ] && printf '%s\n' "${have[@]}" | grep -qxF "$name"; then
+      continue
+    fi
+    missing+=("$name")
+  done < <(printf '%s\n' "$required" | tr ',' '\n')
+  [ "${#missing[@]}" -gt 0 ] || return 0
+  if [ -z "$field_id" ]; then
+    # The field does not exist yet: create it with the full required set.
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      names+=("$name"); ids+=(""); colors+=("GRAY"); descs+=("")
+    done < <(printf '%s\n' "$required" | tr ',' '\n')
+  else
+    # The field exists: carry every current option forward, then append the
+    # gap. The unit separator (not a tab) keeps `read` from collapsing an
+    # empty color or description field, which tab does since it is
+    # whitespace-class in IFS word splitting.
+    while IFS=$'\037' read -r name color desc id; do
+      [ -n "$name" ] || continue
+      names+=("$name"); ids+=("$id"); colors+=("${color:-GRAY}"); descs+=("$desc")
+    done < <(jq -r '.[] | [(.name // ""), (.color // ""), (.description // ""), (.id // "")] | join("")' <<<"$existing")
+    for name in "${missing[@]}"; do
+      names+=("$name"); ids+=(""); colors+=("GRAY"); descs+=("")
+    done
+  fi
+  local vars='' literals='' i
+  for ((i = 0; i < ${#names[@]}; i++)); do
+    vars="$vars, \$name$i:String!, \$color$i:ProjectV2SingleSelectFieldOptionColor!, \$desc$i:String!"
+    args+=(--field "name$i=${names[$i]}" --field "color$i=${colors[$i]}" --field "desc$i=${descs[$i]}")
+    if [ -n "${ids[$i]}" ]; then
+      vars="$vars, \$id$i:String!"
+      args+=(--field "id$i=${ids[$i]}")
+      literals="${literals:+$literals,}{id:\$id$i,name:\$name$i,color:\$color$i,description:\$desc$i}"
+    else
+      literals="${literals:+$literals,}{name:\$name$i,color:\$color$i,description:\$desc$i}"
+    fi
+  done
+  local query
+  if [ -z "$field_id" ]; then
+    query="mutation(\$projectId:ID!, \$fname:String!$vars){createProjectV2Field(input:{projectId:\$projectId,dataType:SINGLE_SELECT,name:\$fname,singleSelectOptions:[$literals]}){projectV2Field{... on ProjectV2SingleSelectField{options{name}}}}}"
+    response=$("$run_fn" --field "query=$query" --field "projectId=$project_id" --field "fname=$field" "${args[@]}") || return 1
+  else
+    query="mutation(\$fieldId:ID!$vars){updateProjectV2Field(input:{fieldId:\$fieldId,singleSelectOptions:[$literals]}){projectV2Field{... on ProjectV2SingleSelectField{options{name}}}}}"
+    response=$("$run_fn" --field "query=$query" --field "fieldId=$field_id" "${args[@]}") || return 1
+  fi
+  jq -e '(.errors // []) | length == 0' <<<"$response" >/dev/null 2>&1 || return 1
+  missing_csv=$(jq -r '(.data.createProjectV2Field // .data.updateProjectV2Field).projectV2Field.options[]?.name' <<<"$response" 2>/dev/null)
+  for name in "${missing[@]}"; do
+    printf '%s\n' "$missing_csv" | grep -qxF "$name" || return 1
+  done
+}
+
 # fm_helm_mapping_orphan_id <project-name> - derive the stable captain-hold id
 # used for a broken local-project or GitHub-board mapping.
 fm_helm_mapping_orphan_id() {
