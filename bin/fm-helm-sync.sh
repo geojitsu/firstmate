@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fm-helm-sync.sh - reconcile the optional Helm GitHub Project board with the
+# fm-helm-sync.sh - reconcile the optional Helm GitHub Project boards with the
 # whole fleet's backlog.
 #
 # The local config/helm.json file is the opt-in.  When it is absent this script
@@ -7,7 +7,7 @@
 # call.
 #
 # ## Fleet-aware
-# The sync runs from the main home only and is the single writer of the board.
+# The sync runs from the main home only and is the single writer of the boards.
 # It discovers every LOCAL secondmate home from data/secondmates.md, parses each
 # home's data/backlog.md, and reconciles the union against the board.  A card is
 # "missing" (and closed to Done) only when its task id is in NO home's backlog.
@@ -42,13 +42,15 @@
 #
 # ## Debounce and run budget
 # The watcher-check path debounces all GitHub work on one SHA-256 hash over every
-# discovered home's data/backlog.md, stored in
+# discovered home's data/backlog.md plus data/helm-project-map.json, stored in
 # state/.helm-sync-backlog.sha256.  Use --force for an explicit board read when
 # the captain has edited a card without changing any backlog; --force still
 # never calls bin/fm-spawn.sh and never deletes a card.
-# One 25-second deadline covers the whole run: the paginated board read and every
-# card write.  The script uses `timeout` when available and otherwise stops each
-# request with a watchdog at the same deadline.  When the deadline arrives with
+# Each board gets the existing 25-second work budget within a total cap of 120
+# seconds. The paginated board reads and card writes share the total deadline,
+# while each board receives its own slice in stable default-first order. The
+# script uses `timeout` when available and otherwise stops each request with a
+# watchdog at the same deadline. When the deadline arrives with
 # card writes still planned, or a card's own write failed, the run stops cleanly,
 # keeps everything it already landed (see "Durable progress"), prints one
 # `fm-helm-sync: partial: N cards remain` line, and exits 0; the next run plans
@@ -66,7 +68,7 @@
 # but blank Status and Priority baselines.  After the field write lands, the
 # sync publishes the complete per-field baseline.  The debounce hash and the
 # deletion tombstones are published only by a complete run.
-# The board poll signature (state/.helm-board-poll) is republished at every
+# The per-board poll signatures (state/.helm-board-poll) are republished at every
 # non-fail-open exit from the board as read plus the "landed patches" recorded
 # for each successful write, so the sync's own writes never read back as a
 # captain edit; bin/fm-helm-lib.sh's fm_helm_landed_patch_program owns the patch
@@ -76,6 +78,7 @@
 # state/helm-cards.tsv (mode 0600) maps every synced card:
 #   <task-id> <item-id> <content-node-id> <draft|issue> <status-option>
 #   <priority-option> <title-base64> <body-base64> <last-seen-epoch>
+#   <board-owner> <board-number>
 # Version 1 rows with one opaque fingerprint are migrated by adopting the
 # board-current values as their baseline, so migration cannot fabricate a
 # divergence.  A missing baseline is rebuilt the same way without a wake.  The
@@ -113,6 +116,7 @@ STATE_PATH="${FM_STATE_OVERRIDE:-$FM_HOME_PATH/state}"
 BACKLOG_PATH="${FM_BACKLOG_OVERRIDE:-$DATA_PATH/backlog.md}"
 SECONDMATES_PATH="$DATA_PATH/secondmates.md"
 CONFIG_FILE="$CONFIG_PATH/helm.json"
+ROUTING_FILE="$DATA_PATH/helm-project-map.json"
 HASH_FILE="$STATE_PATH/.helm-sync-backlog.sha256"
 DISPATCH_FILE="$STATE_PATH/.helm-dispatch-requests"
 DIVERGENCE_FILES=(
@@ -141,6 +145,7 @@ LOCK_HELD=false
 FORCE=0
 LANDED=
 SYNC_DEADLINE_SECONDS=25
+TOTAL_DEADLINE_SECONDS=120
 
 helm_cleanup() {
   local status=$?
@@ -209,6 +214,7 @@ command -v jq >/dev/null 2>&1 || helm_fail_open "jq is unavailable"
 command -v gh >/dev/null 2>&1 || helm_fail_open "gh is unavailable"
 
 if [ -L "$HASH_FILE" ] || [ -L "$DISPATCH_FILE" ] || [ -L "$CARDS_FILE" ] || [ -L "$DELETED_FILE" ] \
+  || [ -L "$ROUTING_FILE" ] \
   || [ -L "$POLL_FILE" ] || [ -L "$RESUME_FILE" ]; then
   helm_fail_open "refusing symlinked Helm state"
 fi
@@ -234,19 +240,27 @@ DISPATCH_STATUS=$(printf '%s\n' "$CONFIG_JSON" | jq -r '.dispatch_status // "In 
   || helm_fail_open "config/helm.json is not valid JSON"
 [ -n "$DISPATCH_STATUS" ] || helm_fail_open "config/helm.json has an empty dispatch_status"
 
+if [ -f "$ROUTING_FILE" ]; then
+  jq -e '.version == 1 and ((.projects // {}) | type == "object") and ((.nudges // {}) | type == "object")' \
+    "$ROUTING_FILE" >/dev/null 2>&1 \
+    || helm_fail_open "data/helm-project-map.json is not valid Helm routing JSON"
+fi
+
 # Discover every local home and build the combined debounce hash.
 HOMES_TSV="$(fm_helm_discover_homes "$FM_HOME_PATH" "$SECONDMATES_PATH")" \
   || helm_fail_open "could not discover fleet homes"
 BACKLOG_PATHS=()
+HOME_PATHS=()
 while IFS=$'\t' read -r home_id home_path; do
   [ -n "$home_path" ] || continue
+  HOME_PATHS+=("$home_path")
   BACKLOG_PATHS+=("$home_path/data/backlog.md")
 done <<EOF
 $HOMES_TSV
 EOF
 [ "${#BACKLOG_PATHS[@]}" -gt 0 ] || helm_fail_open "no fleet home resolved"
 
-BACKLOG_HASH=$(fm_helm_combined_hash "${BACKLOG_PATHS[@]}") \
+BACKLOG_HASH=$(fm_helm_combined_hash "${BACKLOG_PATHS[@]}" "$ROUTING_FILE") \
   || helm_fail_open "no SHA-256 utility is available"
 if [ "$FORCE" -eq 0 ] && [ -f "$HASH_FILE" ] && [ "$(sed -n '1p' "$HASH_FILE" 2>/dev/null)" = "$BACKLOG_HASH" ]; then
   exit 0
@@ -259,12 +273,51 @@ fi
 
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-helm-sync.XXXXXX") \
   || helm_fail_open "could not create temporary workspace"
-BOARD_JSON="$TMP_DIR/board.json"
+BOARDS_DIR="$TMP_DIR/boards"
+mkdir -p "$BOARDS_DIR" || helm_fail_open "could not create Helm board workspace"
 GH_ERROR="$TMP_DIR/gh-error"
 
 # shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
 GRAPHQL_QUERY='query($owner:String!, $number:Int!, $cursor:String) {
   user(login:$owner) {
+    projectV2(number:$number) {
+      id
+      fields(first:100) {
+        pageInfo { hasNextPage }
+        nodes {
+          __typename
+          ... on ProjectV2FieldCommon { id name }
+          ... on ProjectV2SingleSelectField { id name options { id name } }
+        }
+      }
+      items(first:100, after:$cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          content {
+            __typename
+            ... on DraftIssue { id title body }
+            ... on Issue { id title body number url }
+          }
+          fieldValues(first:30) {
+            nodes {
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                name
+                optionId
+                field { ... on ProjectV2SingleSelectField { name } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+
+# shellcheck disable=SC2016 # GraphQL variables must remain literal for gh api.
+ORG_GRAPHQL_QUERY='query($owner:String!, $number:Int!, $cursor:String) {
+  organization(login:$owner) {
     projectV2(number:$number) {
       id
       fields(first:100) {
@@ -324,47 +377,57 @@ ITEM_GRAPHQL_QUERY='query($itemId:ID!) {
   }
 }'
 
-SYNC_DEADLINE=$(( $(date +%s) + SYNC_DEADLINE_SECONDS ))
-PAGE_COUNT=0
-CURSOR=
-while :; do
-  PAGE_COUNT=$((PAGE_COUNT + 1))
-  [ "$PAGE_COUNT" -le 50 ] || helm_fail_open "GitHub project has more than 5000 items"
-  PAGE_JSON="$TMP_DIR/board-page-$PAGE_COUNT.json"
-  GH_ARGS=(
-    --field "query=$GRAPHQL_QUERY"
-    --field "owner=$OWNER"
-    --field "number=$PROJECT_NUMBER"
-  )
-  [ -z "$CURSOR" ] || GH_ARGS+=(--field "cursor=$CURSOR")
-  REMAINING=$(( SYNC_DEADLINE - $(date +%s) ))
-  [ "$REMAINING" -gt 0 ] || helm_fail_open "GitHub project pagination timed out"
-  if ! run_gh_bounded "$REMAINING" gh api graphql "${GH_ARGS[@]}" >"$PAGE_JSON" 2>"$GH_ERROR"; then
-    helm_fail_open "GitHub project read failed"
-  fi
-  if jq -e '(.errors // []) | length > 0' "$PAGE_JSON" >/dev/null 2>&1; then
-    helm_fail_open "GitHub project read returned an error"
-  fi
-  if ! jq -e '.data.user.projectV2.id and (.data.user.projectV2.fields.pageInfo.hasNextPage == false)' "$PAGE_JSON" >/dev/null 2>&1; then
-    helm_fail_open "GitHub project fields exceeded the safe page bound"
-  fi
-  if [ "$PAGE_COUNT" -eq 1 ]; then
-    mv -f -- "$PAGE_JSON" "$BOARD_JSON"
-  else
-    jq -s '.[0] as $all | .[1] as $page
-      | $all
-      | .data.user.projectV2.items.nodes += $page.data.user.projectV2.items.nodes
-      | .data.user.projectV2.items.pageInfo = $page.data.user.projectV2.items.pageInfo' \
-      "$BOARD_JSON" "$PAGE_JSON" >"$BOARD_JSON.next" \
-      || helm_fail_open "could not combine GitHub project pages"
-    mv -f -- "$BOARD_JSON.next" "$BOARD_JSON"
-  fi
-  if [ "$(jq -r '.data.user.projectV2.items.pageInfo.hasNextPage' "$BOARD_JSON")" = false ]; then
-    break
-  fi
-  CURSOR=$(jq -r '.data.user.projectV2.items.pageInfo.endCursor // empty' "$BOARD_JSON")
-  [ -n "$CURSOR" ] || helm_fail_open "GitHub project item page is missing its cursor"
-done
+TOTAL_DEADLINE=
+
+# read_board <owner> <number> <output>
+# Read one board into the normalized shape consumed by the planner. User-owned
+# boards use the first query; organization-owned boards use its fallback.
+read_board() {
+  local owner=$1 number=$2 output=$3 query=$GRAPHQL_QUERY page_count=0 cursor='' page_json remaining
+  local -a gh_args
+  while :; do
+    page_count=$((page_count + 1))
+    [ "$page_count" -le 50 ] || return 1
+    page_json="$TMP_DIR/board-page-$BOARD_READ_SEQUENCE-$page_count.json"
+    gh_args=(--field "query=$query" --field "owner=$owner" --field "number=$number")
+    [ -z "$cursor" ] || gh_args+=(--field "cursor=$cursor")
+    remaining=$(( TOTAL_DEADLINE - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || return 1
+    run_gh_bounded "$remaining" gh api graphql "${gh_args[@]}" >"$page_json" 2>"$GH_ERROR" || return 1
+    if jq -e '(.errors // []) | length > 0' "$page_json" >/dev/null 2>&1; then
+      return 1
+    fi
+    if [ "$query" = "$ORG_GRAPHQL_QUERY" ]; then
+      jq '.data.user.projectV2 = (.data.organization.projectV2 // null)' "$page_json" >"$page_json.normalized" \
+        || return 1
+      mv -f -- "$page_json.normalized" "$page_json" || return 1
+    fi
+    if ! jq -e '.data.user.projectV2.id and (.data.user.projectV2.fields.pageInfo.hasNextPage == false)' "$page_json" >/dev/null 2>&1; then
+      if [ "$query" = "$GRAPHQL_QUERY" ]; then
+        query=$ORG_GRAPHQL_QUERY
+        page_count=0
+        cursor=
+        continue
+      fi
+      return 1
+    fi
+    if [ "$page_count" -eq 1 ]; then
+      cp -- "$page_json" "$output" || return 1
+    else
+      jq -s '.[0] as $all | .[1] as $page
+        | $all
+        | .data.user.projectV2.items.nodes += $page.data.user.projectV2.items.nodes
+        | .data.user.projectV2.items.pageInfo = $page.data.user.projectV2.items.pageInfo' \
+        "$output" "$page_json" >"$output.next" || return 1
+      mv -f -- "$output.next" "$output" || return 1
+    fi
+    if [ "$(jq -r '.data.user.projectV2.items.pageInfo.hasNextPage' "$output")" = false ]; then
+      return 0
+    fi
+    cursor=$(jq -r '.data.user.projectV2.items.pageInfo.endCursor // empty' "$output")
+    [ -n "$cursor" ] || return 1
+  done
+}
 
 # Parse every discovered home's backlog into one tagged union.
 BACKLOG_JSON="$TMP_DIR/backlog.json"
@@ -385,8 +448,6 @@ if ! jq -e 'map(.id) | group_by(.) | all(length == 1)' "$BACKLOG_JSON" >/dev/nul
   helm_fail_open "the same task id appears in more than one home's backlog"
 fi
 
-PROJECT_ID=$(jq -r '.data.user.projectV2.id' "$BOARD_JSON")
-
 field_id() {
   jq -r --arg wanted "$1" \
     '[.data.user.projectV2.fields.nodes[] | select(.name == $wanted and .__typename == "ProjectV2SingleSelectField") | .id][0] // empty' \
@@ -398,21 +459,6 @@ option_id() {
     '[.data.user.projectV2.fields.nodes[] | select(.name == $field and .__typename == "ProjectV2SingleSelectField") | .options[] | select(.name == $wanted) | .id][0] // empty' \
     "$BOARD_JSON"
 }
-
-STATUS_FIELD_ID=$(field_id Status)
-PROJECT_FIELD_ID=$(field_id Project)
-KIND_FIELD_ID=$(field_id Kind)
-PRIORITY_FIELD_ID=$(field_id Priority)
-[ -n "$STATUS_FIELD_ID" ] && [ -n "$PROJECT_FIELD_ID" ] && [ -n "$KIND_FIELD_ID" ] && [ -n "$PRIORITY_FIELD_ID" ] \
-  || helm_fail_open "required Helm fields are unavailable"
-
-STATUS_QUEUED_ID=$(option_id Status "Queued")
-STATUS_IN_FLIGHT_ID=$(option_id Status "In flight")
-STATUS_WAITING_ID=$(option_id Status "Waiting on you")
-STATUS_DONE_ID=$(option_id Status "Done")
-DISPATCH_OPTION_ID=$(option_id Status "$DISPATCH_STATUS")
-[ -n "$STATUS_QUEUED_ID" ] && [ -n "$STATUS_IN_FLIGHT_ID" ] && [ -n "$STATUS_WAITING_ID" ] && [ -n "$STATUS_DONE_ID" ] && [ -n "$DISPATCH_OPTION_ID" ] \
-  || helm_fail_open "required Helm Status options are unavailable"
 
 TMP_RESPONSE="$TMP_DIR/response.json"
 TMP_RESPONSE_ERROR="$TMP_DIR/response.error"
@@ -607,20 +653,38 @@ publish_file() {
 }
 
 # Board patches recorded for every landed write ("<item>\t<json>" lines), folded
-# into the poll signature so the sync's own writes never read back as edits.
-LANDED="$TMP_DIR/landed.tsv"
-: >"$LANDED"
+# into that board's poll signature so the sync's own writes never read back as
+# edits.
+LANDED=
+BOARD_JSON=
+POLL_WORK="$TMP_DIR/poll-work.tsv"
+: >"$POLL_WORK"
+if [ -f "$POLL_FILE" ]; then
+  while IFS= read -r poll_line || [ -n "$poll_line" ]; do
+    case "$poll_line" in
+      *$'\t'*) printf '%s\n' "$poll_line" >>"$POLL_WORK" ;;
+      '') ;;
+      *) printf '%s/%s\t%s\n' "$OWNER" "$PROJECT_NUMBER" "$poll_line" >>"$POLL_WORK" ;;
+    esac
+  done <"$POLL_FILE"
+fi
 
-# publish_progress - republish the poll signature from the board as read plus
-# the landed patches, and keep a stopped forced run forced on its next run.
+# publish_progress - republish the current board signature from the board as
+# read plus its landed patches, and keep a stopped forced run forced on its
+# next run.
 publish_progress() {
-  local signature
+  local signature board_key poll_tmp
+  [ -n "$BOARD_JSON" ] && [ -n "$LANDED" ] || return 0
   signature=$(jq -r --rawfile landed "$LANDED" \
     "$(fm_helm_landed_patch_program) | $(fm_helm_board_signature_program)" "$BOARD_JSON" \
     | fm_helm_sha256_stdin) || return 1
   [ -n "$signature" ] || return 1
-  printf '%s\n' "$signature" >"$TMP_DIR/poll" || return 1
-  publish_file "$TMP_DIR/poll" "$POLL_FILE" || return 1
+  board_key="$BOARD_OWNER/$BOARD_NUMBER"
+  poll_tmp=$(mktemp "$TMP_DIR/poll.XXXXXX") || return 1
+  awk -F '\t' -v k="$board_key" '$1 != k' "$POLL_WORK" >"$poll_tmp" || return 1
+  printf '%s\t%s\n' "$board_key" "$signature" >>"$poll_tmp" || return 1
+  mv -f -- "$poll_tmp" "$POLL_WORK" || return 1
+  publish_file "$POLL_WORK" "$POLL_FILE" || return 1
   if [ "$FORCE" -eq 1 ]; then
     : >"$TMP_DIR/resume" && publish_file "$TMP_DIR/resume" "$RESUME_FILE" || return 1
   fi
@@ -638,9 +702,6 @@ fi
 # The working copy of the cache: prior rows, replaced row by row as writes land.
 CACHE_WORK="$TMP_DIR/cache-work.tsv"
 cp -- "$OLD_CARDS" "$CACHE_WORK" || helm_fail_open "could not stage the Helm identity cache"
-# Rows a complete run publishes as the whole new cache.
-NEW_CARDS="$TMP_DIR/new-cards.tsv"
-: >"$NEW_CARDS"
 OLD_DELETED="$TMP_DIR/old-deleted.tsv"
 : >"$OLD_DELETED"
 if [ -f "$DELETED_FILE" ]; then
@@ -669,6 +730,16 @@ cache_publish_row() {
   local task_id=$1 row=$2 tmp
   tmp=$(mktemp "$TMP_DIR/cache.XXXXXX") || return 1
   { awk -F '\t' -v t="$task_id" '$1 != t' "$CACHE_WORK" && printf '%s\n' "$row"; } >"$tmp" || return 1
+  mv -f -- "$tmp" "$CACHE_WORK" || return 1
+  publish_file "$CACHE_WORK" "$CARDS_FILE"
+}
+
+# cache_remove_row <task-id> - remove one card identity after the board confirms
+# it was deleted or intentionally suppressed.
+cache_remove_row() {
+  local task_id=$1 tmp
+  tmp=$(mktemp "$TMP_DIR/cache.XXXXXX") || return 1
+  awk -F '\t' -v t="$task_id" '$1 != t' "$CACHE_WORK" >"$tmp" || return 1
   mv -f -- "$tmp" "$CACHE_WORK" || return 1
   publish_file "$CACHE_WORK" "$CARDS_FILE"
 }
@@ -721,7 +792,45 @@ if [ "${#report_ids[@]}" -gt 0 ]; then
     || helm_fail_open "could not index task reports"
 fi
 DESIRED_JSON="$TMP_DIR/desired.json"
-jq --argjson report_ids "$REPORT_IDS" "$(fm_helm_desired_program)" "$BACKLOG_JSON" >"$DESIRED_JSON" \
+ROUTING_JSON="$TMP_DIR/routing.json"
+if [ -f "$ROUTING_FILE" ]; then
+  cp -- "$ROUTING_FILE" "$ROUTING_JSON" || helm_fail_open "could not stage Helm routing state"
+else
+  printf '%s\n' '{"version":1,"projects":{},"nudges":{}}' >"$ROUTING_JSON" \
+    || helm_fail_open "could not stage Helm routing defaults"
+fi
+REGISTERED_PROJECTS=$(fm_helm_project_names "${HOME_PATHS[@]}" \
+  | jq -Rsc 'split("\n") | map(select(length > 0))') \
+  || helm_fail_open "could not read the project registry"
+
+# A mapping key that no longer appears in any local registry is a broken
+# boundary, not an instruction to silently route future cards to the default.
+# Use the existing captain-hold primitive and persist its back-reference so the
+# slower reconciliation check does not mint the same hold repeatedly.
+ROUTING_DIRTY=0
+while IFS= read -r orphan_project; do
+  [ -n "$orphan_project" ] || continue
+  orphan_hold=$(jq -r --arg p "$orphan_project" '.projects[$p].orphan_hold_task // empty' "$ROUTING_JSON")
+  [ -n "$orphan_hold" ] && continue
+  orphan_owner=$(jq -r --arg p "$orphan_project" '.projects[$p].owner // ""' "$ROUTING_JSON")
+  orphan_number=$(jq -r --arg p "$orphan_project" '.projects[$p].number // 0' "$ROUTING_JSON")
+  orphan_reason="local project '$orphan_project' no longer appears in the project registry (renamed or removed); its Helm routing to $orphan_owner/$orphan_number is orphaned - point the new project name at this board, send it to the Helm default, or confirm it should be dropped"
+  orphan_hold=$(fm_helm_raise_mapping_orphan "$FM_HOME_PATH" "$orphan_project" "$orphan_reason" 2>/dev/null) \
+    || continue
+  jq --arg p "$orphan_project" --arg id "$orphan_hold" \
+    '.projects[$p].orphan_hold_task = $id' "$ROUTING_JSON" >"$TMP_DIR/routing.next" \
+    || helm_fail_open "could not record the orphaned Helm mapping for $orphan_project"
+  mv -f -- "$TMP_DIR/routing.next" "$ROUTING_JSON"
+  ROUTING_DIRTY=1
+done < <(jq -r --argjson registered "$REGISTERED_PROJECTS" \
+  '.projects // {} | to_entries[] as $e | select(($registered | index($e.key)) == null) | $e.key' "$ROUTING_JSON")
+if [ "$ROUTING_DIRTY" -eq 1 ]; then
+  publish_file "$ROUTING_JSON" "$ROUTING_FILE" \
+    || helm_fail_open "could not publish Helm routing state"
+fi
+jq --slurpfile routing "$ROUTING_JSON" --argjson registered "$REGISTERED_PROJECTS" \
+  --arg default_owner "$OWNER" --argjson default_number "$PROJECT_NUMBER" \
+  --argjson report_ids "$REPORT_IDS" "$(fm_helm_desired_program)" "$BACKLOG_JSON" >"$DESIRED_JSON" \
   || helm_fail_open "could not render the Helm cards"
 
 # Fingerprint = sha256(status, priority, project, kind, title, sha256(body)),
@@ -753,22 +862,113 @@ if [ "$record_count" -gt 0 ]; then
   [ -s "$FPS" ] || helm_fail_open "could not fingerprint the Helm cards"
 fi
 
-PLAN="$TMP_DIR/plan.nul"
-jq -j --slurpfile desired "$DESIRED_JSON" \
-  --rawfile cards "$OLD_CARDS" --rawfile deleted "$OLD_DELETED" --rawfile markers "$OLD_MARKERS" \
-  --rawfile divergences "$OLD_DIVERGENCES" \
-  --rawfile fps "$FPS" \
-  --arg force "$FORCE" --arg dispatch_status "$DISPATCH_STATUS" --arg now "$NOW_EPOCH" \
-  --arg tsv_existed "$TSV_EXISTED" \
-  "$(fm_helm_plan_program)" "$BOARD_JSON" >"$PLAN" \
-  || helm_fail_open "could not plan the Helm reconciliation"
-
-# Execute the plan. Each entry is FM_HELM_PLAN_FIELDS NUL-terminated fields.
+BOARD_INDEX=0
+BOARD_READ_SEQUENCE=0
+BOARD_FAILURES=()
+BOARDS_SUCCEEDED=0
+BOARD_OWNER=
+BOARD_NUMBER=
 FAILED=0
 REMAINING=0
 EXHAUSTED=0
 GUARD_CONFLICT=0
 CONFLICT_WAKE=0
+
+board_failure() {
+  local key=$1 reason=$2
+  local existing
+  for existing in "${BOARD_FAILURES[@]}"; do
+    [ "$existing" = "$key" ] && return 0
+  done
+  BOARD_FAILURES+=("$key")
+  # Keep board-read failures fail-open. The final diagnostic is surfaced by
+  # the watcher adapter, while a transient network failure must not create a
+  # durable wake or partial baseline.
+  : "$reason"
+}
+
+publish_board_failure_wakes() {
+  local key
+  [ "$BOARDS_SUCCEEDED" -gt 0 ] || return 0
+  for key in "${BOARD_FAILURES[@]}"; do
+    fm_wake_append check "helm-board-failure:$key" \
+      "check: Helm board $key could not be reconciled; retry the board-specific sync" \
+      || helm_fail_open "could not enqueue Helm board failure for $key"
+  done
+}
+
+process_board() {
+  local owner=$1 number=$2 key="$1/$2" board_file group_desired
+  local board_now board_budget schema_ok
+  BOARD_WRITE_FAILURE=0
+  BOARD_OWNER=$owner
+  BOARD_NUMBER=$number
+  BOARD_INDEX=$((BOARD_INDEX + 1))
+  BOARD_READ_SEQUENCE=$((BOARD_READ_SEQUENCE + 1))
+  board_file="$BOARDS_DIR/board-$BOARD_INDEX.json"
+  BOARD_JSON=
+  LANDED=
+  if ! read_board "$owner" "$number" "$board_file"; then
+    board_failure "$key" "GitHub project read failed"
+    return 0
+  fi
+  BOARDS_SUCCEEDED=$((BOARDS_SUCCEEDED + 1))
+  BOARD_JSON="$board_file"
+  LANDED="$TMP_DIR/landed-$BOARD_INDEX.tsv"
+  : >"$LANDED"
+  board_now=$(date +%s)
+  board_budget=$((board_now + SYNC_DEADLINE_SECONDS))
+  [ "$board_budget" -le "$TOTAL_DEADLINE" ] || board_budget=$TOTAL_DEADLINE
+  SYNC_DEADLINE=$board_budget
+  PROJECT_ID=$(jq -r '.data.user.projectV2.id' "$BOARD_JSON")
+  STATUS_FIELD_ID=$(field_id Status)
+  PROJECT_FIELD_ID=$(field_id Project)
+  KIND_FIELD_ID=$(field_id Kind)
+  PRIORITY_FIELD_ID=$(field_id Priority)
+  if [ -z "$STATUS_FIELD_ID" ] || [ -z "$PROJECT_FIELD_ID" ] || [ -z "$KIND_FIELD_ID" ] || [ -z "$PRIORITY_FIELD_ID" ]; then
+    board_failure "$key" "required Helm fields are unavailable"
+    publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
+    return 0
+  fi
+  DISPATCH_OPTION_ID=$(option_id Status "$DISPATCH_STATUS")
+  group_desired="$TMP_DIR/desired-$BOARD_INDEX.json"
+  jq --arg owner "$owner" --argjson number "$number" --rawfile cards "$OLD_CARDS" \
+    '($cards | split("\n") | map(select(. != "") | split("\t"))
+      | map(select(length >= 11 and .[9] == $owner and (.[10] | tonumber) == $number) | .[0])) as $historical
+     | map(. as $record
+           | select(($record.desired.board.owner == $owner and $record.desired.board.number == $number)
+                   or (($historical | index($record.id)) != null)))' \
+    "$DESIRED_JSON" >"$group_desired" \
+    || helm_fail_open "could not group desired Helm cards"
+  schema_ok=$(jq -e --argjson records "$(cat "$group_desired")" --arg dispatch "$DISPATCH_STATUS" '
+    .data.user.projectV2.fields.nodes as $fields
+    | (def has_option($field; $name): any($fields[]; .name == $field and .__typename == "ProjectV2SingleSelectField" and any(.options[]?; .name == $name));
+       any($fields[]; .name == "Status" and .__typename == "ProjectV2SingleSelectField")
+       and any($fields[]; .name == "Project" and .__typename == "ProjectV2SingleSelectField")
+       and any($fields[]; .name == "Kind" and .__typename == "ProjectV2SingleSelectField")
+       and any($fields[]; .name == "Priority" and .__typename == "ProjectV2SingleSelectField")
+       and all((["Queued", "In flight", "Waiting on you", "Done", $dispatch] | unique)[]; has_option("Status"; .))
+       and all(["P0", "P1", "P2", "P3", "P4"][]; has_option("Priority"; .))
+       and all(["ship", "investigation", "decision"][]; has_option("Kind"; .))
+       and all($records[]; has_option("Project"; .desired.project)))
+  ' "$BOARD_JSON" 2>/dev/null) || schema_ok=
+  if [ "$schema_ok" != true ]; then
+    board_failure "$key" "required Helm fields or options are unavailable"
+    publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
+    return 0
+  fi
+  PLAN="$TMP_DIR/plan-$BOARD_INDEX.nul"
+  jq -j --slurpfile desired "$group_desired" \
+    --rawfile cards "$OLD_CARDS" --rawfile deleted "$OLD_DELETED" --rawfile markers "$OLD_MARKERS" \
+    --rawfile divergences "$OLD_DIVERGENCES" \
+    --rawfile fps "$FPS" \
+    --arg force "$FORCE" --arg dispatch_status "$DISPATCH_STATUS" --arg now "$NOW_EPOCH" \
+    --arg tsv_existed "$TSV_EXISTED" --arg board_owner "$owner" --argjson board_number "$number" \
+    --arg default_owner "$OWNER" --argjson default_number "$PROJECT_NUMBER" \
+    "$(fm_helm_plan_program)" "$BOARD_JSON" >"$PLAN" \
+    || { board_failure "$key" "could not plan the board reconciliation"; publish_progress || helm_fail_open "could not publish Helm board acknowledgement"; return 0; }
+
+# Execute the plan. Each entry is FM_HELM_PLAN_FIELDS NUL-terminated fields.
 E=()
 
 read_entry() {
@@ -795,7 +995,9 @@ while read_entry; do
   ack_create=${E[18]} ack_write=${E[19]} fingerprint=${E[20]} note=${E[21]}
   [ -z "$note" ] || printf '%s\n' "$note" >&2
   if [ "$phase" = error ]; then
-    helm_fail_open "$action"
+    board_failure "$key" "$action"
+    publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
+    return 0
   fi
   if [ "$EXHAUSTED" -eq 1 ]; then
     case "$action" in create|update|close) REMAINING=$((REMAINING + 1)) ;; esac
@@ -808,6 +1010,7 @@ while read_entry; do
       ;;
     record:skip)
       [ -z "$tombstone" ] || printf '%s\n' "$tombstone" >>"$NEW_DELETED"
+      cache_remove_row "$task_id" || helm_fail_open "could not remove the deleted Helm identity"
       apply_divergence_ops "$divergence_ops" || helm_fail_open "could not update Helm divergence memory"
       continue
       ;;
@@ -839,12 +1042,14 @@ while read_entry; do
       ;;
     deleted:retain)
       printf '%s\n' "$tombstone" >>"$NEW_DELETED"
+      cache_remove_row "$task_id" || helm_fail_open "could not remove the retained Helm identity"
       continue
       ;;
     deleted:hold)
       backlog_hold_for_captain "$home_path" "$task_id" "$hold_reason" \
         || helm_fail_open "could not hold deleted Helm task $task_id"
       printf '%s\n' "$tombstone" >>"$NEW_DELETED"
+      cache_remove_row "$task_id" || helm_fail_open "could not remove the deleted Helm identity"
       raise_wakes "$wakes" \
         || printf 'fm-helm-sync: could not enqueue the Helm card deletion for %s\n' "$task_id" >&2
       apply_divergence_ops "$divergence_ops" \
@@ -857,7 +1062,8 @@ while read_entry; do
   esac
 
   if [ "$action" = none ]; then
-    printf '%s\n' "$cache_row" >>"$NEW_CARDS"
+    cache_publish_row "$task_id" "$cache_row" \
+      || helm_fail_open "could not publish the Helm identity cache"
     continue
   fi
   if ! budget_left; then
@@ -869,6 +1075,7 @@ while read_entry; do
     if ! create_draft "$title" "$body"; then
       printf 'fm-helm-sync: could not create the Helm card for %s\n' "$task_id" >&2
       FAILED=$((FAILED + 1))
+      BOARD_WRITE_FAILURE=1
       continue
     fi
     item_id=$CREATED_ITEM_ID
@@ -886,6 +1093,7 @@ while read_entry; do
   fi
   if [ "$guard_status" -ne 0 ] || ! write_card "$item_id" "$draft_id" "$title" "$body" "$field_writes"; then
     FAILED=$((FAILED + 1))
+    BOARD_WRITE_FAILURE=1
     if [ "$action" = close ]; then
       printf 'fm-helm-sync: could not close the missing Helm task %s\n' "$task_id" >&2
     elif [ -n "$field_writes" ]; then
@@ -897,6 +1105,7 @@ while read_entry; do
   fi
   land "$item_id" "$ack_write"
   if [ "$action" = close ]; then
+    cache_remove_row "$task_id" || helm_fail_open "could not remove the closed Helm identity"
     [ "$marker" != remove ] || marker_remove "$task_id" \
       || helm_fail_open "could not clear the Helm dispatch marker for $task_id"
     continue
@@ -905,9 +1114,42 @@ while read_entry; do
     cache_row=$complete_cache_row
   fi
   cache_publish_row "$task_id" "$cache_row" || helm_fail_open "could not publish the Helm identity cache"
-  printf '%s\n' "$cache_row" >>"$NEW_CARDS"
 done
 exec 3<&-
+publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
+if [ "$BOARD_WRITE_FAILURE" -eq 1 ]; then
+  board_failure "$key" "one or more board writes failed"
+fi
+}
+
+# Stable board order keeps the configured default responsive, then processes
+# linked boards by owner and number. Old cache rows keep an empty desired group
+# alive long enough to read the board that still owns their cards.
+BOARD_KEYS_RAW="$TMP_DIR/board-keys.raw"
+BOARD_KEYS_FILE="$TMP_DIR/board-keys.tsv"
+{
+  printf '%s\t%s\n' "$OWNER" "$PROJECT_NUMBER"
+  jq -r '.[] | [.desired.board.owner, (.desired.board.number | tostring)] | @tsv' "$DESIRED_JSON"
+  awk -F '\t' -v owner="$OWNER" -v number="$PROJECT_NUMBER" \
+    'NF >= 11 && $10 != "" && $11 != "" { print $10 "\t" $11 }' "$OLD_CARDS"
+} | awk -F '\t' '!seen[$1 SUBSEP $2]++' >"$BOARD_KEYS_RAW" \
+  || helm_fail_open "could not build the Helm board groups"
+{
+  awk -F '\t' -v owner="$OWNER" -v number="$PROJECT_NUMBER" '$1 == owner && $2 == number' "$BOARD_KEYS_RAW"
+  awk -F '\t' -v owner="$OWNER" -v number="$PROJECT_NUMBER" '$1 != owner || $2 != number' "$BOARD_KEYS_RAW" \
+    | sort -t $'\t' -k1,1 -k2,2n
+} >"$BOARD_KEYS_FILE" || helm_fail_open "could not order the Helm board groups"
+BOARD_COUNT=$(wc -l <"$BOARD_KEYS_FILE")
+TOTAL_BUDGET=$((SYNC_DEADLINE_SECONDS * BOARD_COUNT))
+[ "$TOTAL_BUDGET" -le "$TOTAL_DEADLINE_SECONDS" ] || TOTAL_BUDGET=$TOTAL_DEADLINE_SECONDS
+TOTAL_DEADLINE=$(( $(date +%s) + TOTAL_BUDGET ))
+
+while IFS=$'\t' read -r board_owner board_number; do
+  [ -n "$board_owner" ] && [ -n "$board_number" ] || continue
+  process_board "$board_owner" "$board_number"
+done <"$BOARD_KEYS_FILE"
+
+publish_board_failure_wakes
 
 if [ "$CONFLICT_WAKE" -eq 1 ]; then
   printf 'check: Helm board and backlog both changed; reconcile the affected card(s)\n'
@@ -915,20 +1157,29 @@ if [ "$CONFLICT_WAKE" -eq 1 ]; then
 fi
 
 if [ "$GUARD_CONFLICT" -eq 1 ]; then
-  publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
   printf 'check: Helm board and backlog both changed; run bin/fm-helm-sync.sh --force to reconcile\n'
   exit 0
 fi
+if [ "${#BOARD_FAILURES[@]}" -gt 0 ]; then
+board_failure_list=$(IFS=', '; printf '%s' "${BOARD_FAILURES[*]}")
+  printf 'fm-helm-sync: %s board(s) could not be reconciled: %s\n' "${#BOARD_FAILURES[@]}" "$board_failure_list"
+fi
 if [ $((FAILED + REMAINING)) -gt 0 ]; then
-  publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
   printf 'fm-helm-sync: partial: %s cards remain\n' $((FAILED + REMAINING))
+  exit 0
+fi
+if [ "${#BOARD_FAILURES[@]}" -gt 0 ]; then
   exit 0
 fi
 
 # A complete run: publish the whole refreshed identity cache, the deletion
 # tombstones, the debounce hash, and the poll signature.
-if [ -s "$NEW_CARDS" ] || [ "$TSV_EXISTED" = true ]; then
-  sort -u "$NEW_CARDS" >"$TMP_DIR/cards.sorted" || helm_fail_open "could not stage the Helm identity cache"
+if [ -s "$CACHE_WORK" ] || [ "$TSV_EXISTED" = true ]; then
+  jq -r '.[].id' "$BACKLOG_JSON" >"$TMP_DIR/backlog-ids" \
+    || helm_fail_open "could not stage the Helm task identities"
+  awk -F '\t' 'NR == FNR { ids[$1] = 1; next } ids[$1]' \
+    "$TMP_DIR/backlog-ids" "$CACHE_WORK" | sort -u >"$TMP_DIR/cards.sorted" \
+    || helm_fail_open "could not stage the Helm identity cache"
   publish_file "$TMP_DIR/cards.sorted" "$CARDS_FILE" || helm_fail_open "could not publish the Helm identity cache"
 fi
 
@@ -943,7 +1194,6 @@ printf '%s\n' "$BACKLOG_HASH" >"$TMP_DIR/hash" || helm_fail_open "could not writ
 publish_file "$TMP_DIR/hash" "$HASH_FILE" || helm_fail_open "could not publish Helm sync state"
 
 FORCE=0
-publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
 rm -f -- "$RESUME_FILE"
 
 printf 'fm-helm-sync: synchronized\n'

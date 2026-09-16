@@ -122,17 +122,17 @@ The file format is unchanged in both modes; tasks-axi and manual edits produce t
 
 ## Helm board sync (config/helm.json)
 
-The optional `bin/fm-helm-sync.sh` reconciles the whole fleet's backlog with a user-owned GitHub Project v2 board.
-Configure it in the main home only: the sync runs from there and is the single writer of the board.
+The optional `bin/fm-helm-sync.sh` reconciles the whole fleet's backlog with one or more user-owned GitHub Project v2 boards.
+Configure it in the main home only: the sync runs from there and is the single writer of the boards.
 Copy [`docs/examples/helm.json.example`](examples/helm.json.example) to `config/helm.json` and set the board owner and number before enabling the sync.
 The tracked example lives under `docs/examples/` so the whole `config/` directory can stay gitignored, while the real configuration remains local and untracked.
-The accepted configuration fields are `owner`, `number`, and optional `dispatch_status`, which defaults to `In flight`.
+The accepted configuration fields are `owner`, `number`, optional `dispatch_status` (default `In flight`), and optional `reconcile_interval_hours` (default `6`).
 The configured GitHub account needs the `project` scope, which provides the project read and write access used by the sync.
 An absent `config/helm.json` makes the script exit 0 without reading any backlog or contacting GitHub.
 
-The sync discovers every local secondmate home from `data/secondmates.md` and reconciles the union of every home's `data/backlog.md` against the board, so a secondmate's cards are managed too and a card is closed to Done only when its task id is in no home's backlog.
+The sync discovers every local secondmate home from `data/secondmates.md` and reconciles the union of every home's `data/backlog.md` against grouped boards. A project named in `data/projects.md` can route its cards to its mapped `owner`/`number`; unmapped projects use the configured default board. Multiple projects may intentionally share one mapped board.
 Remote secondmate homes are not handled yet; see the "Remote homes" note in `bin/fm-helm-lib.sh`.
-Bootstrap automatically registers `state/helm-sync.check.sh` and `state/helm-board.check.sh` with the main home's watcher while this configuration exists.
+Bootstrap automatically registers `state/helm-sync.check.sh`, `state/helm-board.check.sh`, and `state/helm-reconcile.check.sh` with the main home's watcher while this configuration exists.
 The watcher runs the sync and authenticated board poll at its ordinary check cadence, and the combined backlog hash avoids a GitHub call when no local home changed.
 That one main-home writer covers every discovered local secondmate backlog, so secondmates do not need copied Helm configuration or competing sync processes.
 If a fail-open sync skip would leave a backlog item unsynchronized, its diagnostic becomes a durable watcher `check` wake instead of being silent.
@@ -159,6 +159,24 @@ The script never deletes a card and never spawns work.
 The sync records each request and unresolved field divergence with durable markers and queue keys, so repeating an unchanged board edit never enqueues duplicate wakes.
 `state/helm-cards.tsv` (mode 0600) maps cards to tasks and stores the per-field board baselines used for reconciliation.
 The sync rebuilds the cache silently from the board when absent, and the `bin/fm-helm-sync.sh` header owns its row format and the per-card publication rule.
+
+`data/helm-project-map.json` is the optional main-home routing map. Its
+version-1 `projects` entries use the exact local project name as the key and
+contain `owner`, `number`, `title`, `url`, `state`, `linked_at`, `move`, and
+`orphan_hold_task`; an absent entry means the configured default board. The
+`nudges` object remembers the once-per-30-days suggestion for an unlinked
+project. The file is mode `0600` and is included in the sync debounce hash.
+
+Use `bin/fm-helm-project-map.sh list [--counts]` to inspect routing,
+`link <project> [<title>] [--owner <login>] [--existing <owner>/<number>]` to
+create or reuse and provision a board, `unlink <project>` to route future cards
+back to the default, and `sync` to run routing reconciliation immediately.
+`move <project> [<title>] [--owner <login>] [--existing <owner>/<number>] [--default] [--yes]`
+is the only command that relocates existing cards. It records add/create and
+delete progress in `state/helm-moves.tsv` and resumes a confirmed migration.
+`bin/fm-helm-reconcile.sh` checks mapped-board existence and title drift,
+continues confirmed moves, and sends broken local or board mappings through the
+existing captain-hold path.
 
 `bin/fm-helm-poll.sh` is the automatically registered watcher check (through `state/helm-board.check.sh`, bound with `bin/fm-check-register.sh helm-board`) that wakes firstmate to run `--force` when the captain edits a card, including when a backlog change is pending.
 It is inert until `config/helm.json` exists.

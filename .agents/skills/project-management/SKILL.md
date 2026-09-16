@@ -59,6 +59,11 @@ Clone into `projects/<name>` and add the registry entry only after the destinati
 A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
 A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
 A `local-only` project may have no remote and skips no-mistakes initialization.
+When Helm is enabled (`config/helm.json` exists), also offer the new project a
+dedicated GitHub Project board or the shared Helm default; skipping that choice
+is fine and keeps future cards on the default. If the captain chooses a
+dedicated board, run `bin/fm-helm-project-map.sh link <name>` after the project
+is registered.
 
 ## Create a project
 
@@ -69,6 +74,9 @@ After remote creation succeeds, clone it locally, add the registry entry, and in
 
 For a purely `local-only` project, create a local Git repository under its unused `projects/<name>` path, add the registry entry, and make no GitHub call.
 The captain's request to create that local project authorizes this local initialization, but it does not authorize an unmentioned remote repository.
+When Helm is enabled (`config/helm.json` exists), offer the same dedicated-board
+or shared-default choice for the new project. If a dedicated board is accepted,
+run `bin/fm-helm-project-map.sh link <name>` after registration.
 
 ## Initialize
 
