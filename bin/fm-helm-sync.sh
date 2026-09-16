@@ -243,6 +243,7 @@ DISPATCH_STATUS=$(printf '%s\n' "$CONFIG_JSON" | jq -r '.dispatch_status // "In 
 RETAIN_OWNER=
 RETAIN_NUMBER=
 RETAIN_PROJECT=${FM_HELM_RETAIN_PROJECT:-}
+RETAIN_INDEXED=0
 case "${FM_HELM_RETAIN_BOARD:-}" in
   */*) RETAIN_OWNER=${FM_HELM_RETAIN_BOARD%/*}; RETAIN_NUMBER=${FM_HELM_RETAIN_BOARD##*/} ;;
 esac
@@ -251,7 +252,7 @@ case "$RETAIN_OWNER/$RETAIN_NUMBER" in
 esac
 
 if [ -f "$ROUTING_FILE" ]; then
-  jq -e '.version == 1 and ((.projects // {}) | type == "object") and ((.nudges // {}) | type == "object")' \
+    jq -e '.version == 1 and ((.projects // {}) | type == "object") and ((.nudges // {}) | type == "object") and ((.retention // null) | type == "object" or . == null)' \
     "$ROUTING_FILE" >/dev/null 2>&1 \
     || helm_fail_open "data/helm-project-map.json is not valid Helm routing JSON"
 fi
@@ -832,6 +833,11 @@ fi
 REGISTERED_PROJECTS=$(fm_helm_project_names "${HOME_PATHS[@]}" \
   | jq -Rsc 'split("\n") | map(select(length > 0))') \
   || helm_fail_open "could not read the project registry"
+if [ -z "$RETAIN_OWNER" ]; then
+  IFS=$'\t' read -r RETAIN_PROJECT RETAIN_OWNER RETAIN_NUMBER < <(jq -r '
+    .retention // {} | select((.project | type) == "string" and (.owner | type) == "string" and (.owner | length) > 0 and (.number | type) == "number" and .number > 0)
+    | [.project,.owner,(.number | tostring)] | @tsv' "$ROUTING_JSON")
+fi
 
 # A mapping key that no longer appears in any local registry is a broken
 # boundary, not an instruction to silently route future cards to the default.
@@ -977,7 +983,7 @@ process_board() {
   # Project field may not have that option yet) so the per-board hot path
   # stays a single jq call, same as before this check grew a second part.
   schema_ok=false missing_projects=
-  IFS=$'\t' read -r schema_ok missing_projects < <(jq -r --argjson records "$(cat "$group_desired")" --arg dispatch "$DISPATCH_STATUS" '
+  IFS=$'\t' read -r schema_ok missing_projects < <(jq -r --argjson records "$(cat "$group_desired")" --argjson registered "$REGISTERED_PROJECTS" --slurpfile routing "$ROUTING_JSON" --arg owner "$owner" --argjson number "$number" --arg default_owner "$OWNER" --argjson default_number "$PROJECT_NUMBER" --arg dispatch "$DISPATCH_STATUS" '
     .data.user.projectV2.fields.nodes as $fields
     | (def has_option($field; $name): any($fields[]; .name == $field and .__typename == "ProjectV2SingleSelectField" and any(.options[]?; .name == $name));
        any($fields[]; .name == "Status" and .__typename == "ProjectV2SingleSelectField")
@@ -988,7 +994,10 @@ process_board() {
        and all(["P0", "P1", "P2", "P3", "P4"][]; has_option("Priority"; .))
        and all(["ship", "investigation", "decision"][]; has_option("Kind"; .))) as $ok
     | ([$fields[] | select(.name == "Project" and .__typename == "ProjectV2SingleSelectField") | .options[]?.name]) as $have
-    | [$ok, (($records | map(.desired.project) | unique) - $have | join(","))] | @tsv
+    | (if $owner == $default_owner and $number == $default_number
+       then ($registered - [($routing[0].projects // {}) | keys[]])
+       else [] end) as $unmapped
+    | [$ok, ((($records | map(.desired.project)) + $unmapped | unique) - $have | join(","))] | @tsv
   ' "$BOARD_JSON" 2>/dev/null)
   if [ "$schema_ok" != true ]; then
     board_failure "$key" "required Helm fields or options are unavailable"
@@ -1180,9 +1189,11 @@ while read_entry; do
 done
 exec 3<&-
 publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
-if [ "$BOARD_WRITE_FAILURE" -eq 1 ]; then
-  board_failure "$key" "one or more board writes failed"
-fi
+  if [ "$BOARD_WRITE_FAILURE" -eq 1 ]; then
+    board_failure "$key" "one or more board writes failed"
+  elif [ "$owner" = "$RETAIN_OWNER" ] && [ "$number" = "$RETAIN_NUMBER" ]; then
+    RETAIN_INDEXED=1
+  fi
 }
 
 # Stable board order keeps the configured default responsive, then processes
@@ -1215,6 +1226,16 @@ while IFS=$'\t' read -r board_owner board_number; do
   [ -n "$board_owner" ] && [ -n "$board_number" ] || continue
   process_board "$board_owner" "$board_number"
 done <"$BOARD_KEYS_FILE"
+
+if [ "$RETAIN_INDEXED" -eq 1 ]; then
+  jq --arg project "$RETAIN_PROJECT" --arg owner "$RETAIN_OWNER" --argjson number "$RETAIN_NUMBER" '
+    if .retention.project == $project and .retention.owner == $owner and .retention.number == $number then del(.retention) else . end' \
+    "$ROUTING_JSON" >"$TMP_DIR/routing.next" \
+    || helm_fail_open "could not clear the indexed Helm retention"
+  mv -f -- "$TMP_DIR/routing.next" "$ROUTING_JSON"
+  publish_file "$ROUTING_JSON" "$ROUTING_FILE" \
+    || helm_fail_open "could not publish Helm routing state"
+fi
 
 publish_board_failure_wakes
 

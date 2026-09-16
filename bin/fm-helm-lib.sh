@@ -444,7 +444,10 @@ fm_helm_desired_program() {
     (.repo // "") as $r
     | ($r | if contains("/") then split("/") | .[-1] else . end) as $base
     | ($routing[0].projects // {}) as $projects
-    | ([$projects | to_entries[] | select((.key == $r or .key == $base) and (.key as $key | ($registered | index($key) != null)))][0].value // null) as $entry
+    | (if ($registered | index($r)) != null then $r
+       elif ($registered | index($base)) != null then $base
+       else "" end) as $project
+    | ($projects[$project] // null) as $entry
     | if $entry != null
          and (($entry.state // "active") == "active" or ($entry.state // "") == "migrating")
          and (($entry.owner // "") | type) == "string"

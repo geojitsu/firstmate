@@ -88,7 +88,7 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-helm-project-map.XXXXXX") \
 map_load() {
   if [ -f "$MAP_FILE" ]; then
     [ ! -L "$MAP_FILE" ] || fail "refusing symlinked Helm routing state"
-    jq -e '.version == 1 and ((.projects // {}) | type == "object") and ((.nudges // {}) | type == "object")' \
+    jq -e '.version == 1 and ((.projects // {}) | type == "object") and ((.nudges // {}) | type == "object") and ((.retention // null) | type == "object" or . == null)' \
       "$MAP_FILE" >/dev/null 2>&1 || fail "data/helm-project-map.json is invalid"
     cp -- "$MAP_FILE" "$TMP_DIR/map.json" || fail "could not stage Helm routing state"
   else
@@ -229,16 +229,16 @@ map_link() {
     esac
     shift
   done
-  prior=$(map_entry "$project")
+  prior=$(jq -c --arg p "$project" 'if .retention.project == $p then .retention else .projects[$p] // null end' "$TMP_DIR/map.json")
   prior_owner=$(printf '%s\n' "$prior" | jq -r '.owner // empty')
   prior_number=$(printf '%s\n' "$prior" | jq -r '.number // empty')
   PROJECT_SCHEMA_OPTION=$project
   create_or_reuse_board "$owner" "$title" "$existing"
   ensure_schema
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  jq --arg p "$project" --arg owner "$BOARD_OWNER" --argjson number "$BOARD_NUMBER" \
+  jq --arg p "$project" --arg owner "$BOARD_OWNER" --argjson number "$BOARD_NUMBER" --arg prior_owner "$prior_owner" --argjson prior_number "${prior_number:-0}" \
     --arg title "$BOARD_TITLE" --arg url "$BOARD_URL" --arg now "$now" \
-    '.projects[$p] = {owner:$owner,number:$number,title:$title,url:$url,state:"active",linked_at:$now,move:null,orphan_hold_task:null} | .nudges |= del(.[$p])' \
+    '.projects[$p] = {owner:$owner,number:$number,title:$title,url:$url,state:"active",linked_at:$now,move:null,orphan_hold_task:null} | .nudges |= del(.[$p]) | if $prior_owner != "" and $prior_number > 0 then .retention = {project:$p,owner:$prior_owner,number:$prior_number} else . end' \
     "$TMP_DIR/map.json" >"$TMP_DIR/map.next" || fail "could not prepare the Helm routing entry"
   mv -f -- "$TMP_DIR/map.next" "$TMP_DIR/map.json"
   map_publish || fail "could not publish data/helm-project-map.json"
@@ -259,7 +259,9 @@ backlog_task_ids() {  # <project> <output-file>
     backlog_out="$TMP_DIR/backlog-${home_id}.json"
     fm_helm_parse_home_backlog "$home_id" "$home/data/backlog.md" "$backlog_out" 2>/dev/null \
       || fail "could not parse $home/data/backlog.md"
-    jq -r --arg p "$project" '.[] | select((.repo // "") == $p or (((.repo // "") | split("/"))[-1] == $p)) | .id' "$backlog_out" >>"$output" \
+    jq -r --arg p "$project" --argjson registered "$(fm_helm_project_names "${HOME_PATHS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" '
+      .[] | (.repo // "") as $repo | ($repo | split("/") | .[-1]) as $base
+      | select(if ($registered | index($repo)) != null then $repo == $p else $base == $p end) | .id' "$backlog_out" >>"$output" \
       || fail "could not find Helm tasks for $project"
   done <<EOF
 $HOMES_TSV
@@ -522,10 +524,10 @@ map_move() {
 map_unlink() {
   local project=$1 prior prior_owner prior_number
   map_load
-  prior=$(map_entry "$project")
+  prior=$(jq -c --arg p "$project" 'if .retention.project == $p then .retention else .projects[$p] // null end' "$TMP_DIR/map.json")
   prior_owner=$(printf '%s\n' "$prior" | jq -r '.owner // empty')
   prior_number=$(printf '%s\n' "$prior" | jq -r '.number // empty')
-  jq --arg p "$project" '.projects |= del(.[$p]) | .nudges |= del(.[$p])' "$TMP_DIR/map.json" >"$TMP_DIR/map.next" \
+  jq --arg p "$project" --arg owner "$prior_owner" --argjson number "${prior_number:-0}" '.projects |= del(.[$p]) | .nudges |= del(.[$p]) | if $owner != "" and $number > 0 then .retention = {project:$p,owner:$owner,number:$number} else . end' "$TMP_DIR/map.json" >"$TMP_DIR/map.next" \
     || fail "could not prepare the unlink"
   mv -f -- "$TMP_DIR/map.next" "$TMP_DIR/map.json"
   map_publish || fail "could not publish data/helm-project-map.json"
