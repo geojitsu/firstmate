@@ -543,6 +543,31 @@ fi
   || fail "a restored card did not clear its deletion tombstone"
 pass "a deleted card holds its live task for the captain and is not treated as new"
 
+# A card that stays on the same board (its cached owner/number still match)
+# but no longer carries its task's marker line must be recreated, not
+# silently marked "retained on another board" by a stale identity match.
+marker_dir="$TMP_ROOT/stale-marker"
+mkdir -p "$marker_dir/home/config" "$marker_dir/home/data" "$marker_dir/home/state"
+marker_fb=$(install_fakes "$marker_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$marker_dir/home/config/helm.json"
+cat > "$marker_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] marker-task - Marker task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
+## Done
+EOF
+board_json "$(jq -n --argjson item "$(draft_item marker-item marker-draft marker-task 'Marker task' 'x' Queued queued-status P3 p3-priority)" '[$item]')" > "$marker_dir/board.json"
+run_sync "$marker_dir" "$marker_fb" >/dev/null 2>&1 || fail "stale-marker seed run failed"
+grep -F $'marker-task\tmarker-item\t' "$marker_dir/home/state/helm-cards.tsv" >/dev/null \
+  || fail "stale-marker seed did not record the identity cache row"
+board_json "$(jq -n --argjson item "$(draft_item marker-item marker-draft other-marker 'Marker task' 'x' Queued queued-status P3 p3-priority)" '[$item]')" > "$marker_dir/board.json"
+: > "$marker_dir/gh.log"
+run_sync "$marker_dir" "$marker_fb" --force >/dev/null 2>&1 || fail "stale-marker follow-up run failed"
+grep -qF 'addProjectV2DraftIssue' "$marker_dir/gh.log" && grep -qF 'title=Marker task' "$marker_dir/gh.log" \
+  || fail "a same-board card that lost its task marker was silently retained instead of recreated"
+pass "a same-board card that loses its task marker is recreated, not silently retained"
+
 held_delete_dir="$TMP_ROOT/delete-already-held"
 mkdir -p "$held_delete_dir/home/config" "$held_delete_dir/home/data" "$held_delete_dir/home/state"
 held_delete_fb=$(install_fakes "$held_delete_dir")
