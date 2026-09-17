@@ -513,6 +513,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/bugs/2026-09-17-helm-sync-schema-check-argv-limit.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/calm-mode-feasibility.md",
       "audience": "maintainer-verification"
     },
