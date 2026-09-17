@@ -1590,6 +1590,50 @@ rc=$?
 [ -z "$out" ] || fail "losing the lock race to a concurrent sync should stay silent: $out"
 pass "the watcher stays silent when a run only loses the lock race to a concurrent sync"
 
+# ---------------------------------------------------------------------------
+# Fleet-scale schema check: a real fleet's full card bodies push a board
+# group's combined desired-records JSON well past the OS argv limit
+# (ARG_MAX, 2097152 bytes on this host). The per-board schema check must
+# read that array through a file, never as a literal jq argument, or it
+# fails closed on every board every time - see fm-helm-sync-schema-check-
+# argmax-001. Every card already matches its board twin so this run needs
+# no writes; the only thing under test is whether the read path survives
+# an oversized array, not per-row write throughput (that is covered above).
+# ---------------------------------------------------------------------------
+case_dir="$TMP_ROOT/argmax-scale"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
+
+argmax_task_count=100
+argmax_note_pad=$(printf 'x%.0s' $(seq 1 25000))
+
+{
+  printf '%s\n\n' "# Backlog"
+  printf '%s\n' "## Queued"
+  for i in $(seq 1 "$argmax_task_count"); do
+    printf -- '- [ ] argmax-task-%d - Argmax task %d (repo: fixture-firstmate) (kind: ship) (priority: 3) (since: 2026-09-02)\n' "$i" "$i"
+    printf '  note for task %d %s\n' "$i" "$argmax_note_pad"
+  done
+  printf '%s\n' "## Done"
+} > "$case_dir/home/data/backlog.md"
+[ "$(wc -c < "$case_dir/home/data/backlog.md")" -gt 2097152 ] \
+  || fail "argmax backlog fixture is not larger than ARG_MAX (2097152 bytes); strengthen the padding before trusting this test to catch an argv-limit regression"
+
+argmax_items="$case_dir/argmax-items.jsonl"
+: > "$argmax_items"
+for i in $(seq 1 "$argmax_task_count"); do
+  scale_item "argmax-task-$i" "Argmax task $i" "$(scale_body "argmax-task-$i" P3 2026-09-02 "note for task $i $argmax_note_pad")" Queued queued-status P3 p3-priority >> "$argmax_items"
+done
+board_json "$(jq -s '.' "$argmax_items")" > "$case_dir/board.json"
+
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "argmax-scale sync exited nonzero: $out"
+assert_contains "$out" "fm-helm-sync: synchronized" "a run against an oversized desired-records array did not finish: $out"
+[ "$(grep -c 'query=mutation(' "$case_dir/gh.log")" -eq 0 ] \
+  || fail "an already-matching fleet-scale board should need no writes: $(grep -F 'query=mutation(' "$case_dir/gh.log" | head -3)"
+pass "the per-board schema check survives a desired-records array larger than ARG_MAX"
+
 for mode in no-config noauth scope network; do
   cd_dir="$TMP_ROOT/fail-$mode"
   mkdir -p "$cd_dir/home/config" "$cd_dir/home/data" "$cd_dir/home/state"
