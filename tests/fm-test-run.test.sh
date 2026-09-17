@@ -117,20 +117,11 @@ init_changed_fixture_repo() {
     fm-backend-cmux.test.sh \
     fm-backend-zellij.test.sh \
     fm-control-herdr-smoke.test.sh \
-    fm-backend-orca.test.sh \
-    fm-helm-sync-python.test.sh; do
+    fm-backend-orca.test.sh; do
     printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/$script"
     chmod +x "$repo/tests/$script"
   done
   : >"$repo/tests/lib.sh"
-  mkdir -p "$repo/python/helm_sync"
-  : >"$repo/python/helm_sync/__init__.py"
-  : >"$repo/tests/jq_parity.py"
-  # Coverage references, mirroring the real suite's coverage comment: the
-  # generic source-to-test reference scan finds this suite by these literal
-  # strings rather than a dedicated fm-test-run.sh mapping.
-  printf '# python/helm_sync/__init__.py\n# tests/jq_parity.py\n' \
-    >>"$repo/tests/fm-helm-sync-python.test.sh"
   : >"$repo/tests/fm-backend-herdr-eventwait.test.py"
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/fm-control-lib.sh"
@@ -304,20 +295,6 @@ test_changed_dependency_selection_and_unmapped_failure() {
     "timeout library selects quota polling coverage"
   git -C "$repo" add bin/fm-timeout-lib.sh
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm timeout-lib-change
-
-  printf '\n' >>"$repo/python/helm_sync/__init__.py"
-  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
-  [ "$listed" = "tests/fm-helm-sync-python.test.sh" ] \
-    || fail "python/helm_sync source change should select only its parity test, got: $listed"
-  git -C "$repo" add python/helm_sync/__init__.py
-  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm helm-sync-python-source-change
-
-  printf '\n' >>"$repo/tests/jq_parity.py"
-  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
-  [ "$listed" = "tests/fm-helm-sync-python.test.sh" ] \
-    || fail "jq_parity.py change should select only the helm sync parity test, got: $listed"
-  git -C "$repo" add tests/jq_parity.py
-  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm jq-parity-fixture-change
 
   printf '\n' >>"$repo/src/unmapped.ts"
   set +e

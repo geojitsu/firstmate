@@ -1325,12 +1325,6 @@ families_for_changed_path() {
       # fm-helm-sync.test.sh, which builds config/helm.json fixtures from it.
       printf '%s\n' "__script__:fm-helm-sync.test.sh"
       ;;
-    python/helm_sync/*|tests/jq_parity.py)
-      # Per-script evidence like the bin/ consumer scan below: the sole
-      # consumer is the jq-parity suite, not a whole curated family.
-      scripts_for_test_reference "$path" \
-        || printf '%s\n' "__unmapped__:$path"
-      ;;
     tests/lib.sh|tests/*-helpers.sh|tests/fixtures.sh)
       families_for_test_reference "$(basename "$path")" \
         || printf '%s\n' "__unmapped__:$path"

@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from typing import Mapping
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 os.sys.path.insert(0, str(ROOT / "python"))
 
 from helm_sync.backlog import parse_backlog, record_to_dict
