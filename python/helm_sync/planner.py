@@ -248,9 +248,6 @@ def _plan_existing(
 
     title_write = not title_conflict and current_title_b64 != desired_title_b64 and not title_board_changed
     body_write = not body_conflict and current_body_b64 != desired_body_b64 and not body_board_changed
-    if is_issue:
-        title_write = False
-        body_write = False
     text_write = title_write or body_write
 
     title_fp = _fingerprint("title", current_title_b64, desired_title_b64)
@@ -731,8 +728,8 @@ def _legacy_action_bytes(action: PlanAction) -> bytes:
         )
         return "\0".join(values).encode("utf-8") + b"\0"
     draft_id = action.draft_issue_id or "" if isinstance(action, UpdateDraft) else ""
-    title = action.title if isinstance(action, (NoChange, UpdateDraft)) else action.expected.content.title
-    body = action.body if isinstance(action, (NoChange, UpdateDraft)) else action.expected.content.body
+    title = action.title if isinstance(action, (NoChange, UpdateDraft)) else str(action.acknowledge["title"])
+    body = action.body if isinstance(action, (NoChange, UpdateDraft)) else str(action.acknowledge["body"])
     writes = action.field_writes if isinstance(action, (NoChange, UpdateDraft, UpdateIssueFields)) else ()
     wakes = action.wakes
     div_changes = action.divergence_changes

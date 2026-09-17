@@ -30,6 +30,7 @@ from helm_sync.model import (
     FieldValue,
     Fingerprint,
     HomeId,
+    IssueContent,
     ItemId,
     KindName,
     OptionId,
@@ -271,11 +272,12 @@ def _planner_fixture(
     board_card: bool = True,
     cached_card: bool = True,
     divergences: tuple[tuple[str, str], ...] = (),
+    is_issue: bool = False,
 ) -> tuple[BoardSnapshot, DesiredCard, SyncState, dict[str, object], str, str]:
     """Create matching Python and jq planner inputs using fixture identities."""
     task = TaskId("fixture-task")
     item = ItemId("PVTI_fixture_card")
-    node = "DRAFT_fixture_card"
+    node = "ISSUE_fixture_card" if is_issue else "DRAFT_fixture_card"
     board_ref = BoardRef(Owner("fixture-owner"), ProjectNumber(999))
     title_current = title_base if title_current is None else title_current
     title_desired = title_base if title_desired is None else title_desired
@@ -293,9 +295,14 @@ def _planner_fixture(
         "Kind": FieldValue("Kind", "ship", OptionId("option_kind_ship")),
         "Priority": FieldValue("Priority", priority_current, OptionId(_priority_id(priority_current))),
     }
+    content = (
+        IssueContent(node, title_current, current_body)
+        if is_issue
+        else DraftContent(node, title_current, current_body)
+    )
     current_card = CardSnapshot(
         item,
-        DraftContent(node, title_current, current_body),
+        content,
         current_fields,
         task,
     )
@@ -320,7 +327,7 @@ def _planner_fixture(
         item,
         board_ref,
         node,
-        False,
+        is_issue,
         _status_id(status_base),
         _priority_id(priority_base),
         title_base,
@@ -341,7 +348,7 @@ def _planner_fixture(
     raw_card = {
         "id": str(item),
         "content": {
-            "__typename": "DraftIssue",
+            "__typename": "Issue" if is_issue else "DraftIssue",
             "id": node,
             "title": title_current,
             "body": current_body,
@@ -385,7 +392,7 @@ def _planner_fixture(
             str(task),
             str(item),
             node,
-            "draft",
+            "issue" if is_issue else "draft",
             _status_id(status_base),
             _priority_id(priority_base),
             _b64(title_base),
@@ -615,6 +622,29 @@ class HelmSyncPythonParityTests(unittest.TestCase):
                 snapshot, wanted, state, raw_board, cards_tsv, divergence_text = _planner_fixture(
                     **overrides,
                     divergences=divergences,
+                )
+                plan = plan_board(snapshot, (wanted,), state, force=True, epoch="1700000001")
+                python_output = _serialize_plan_for_jq_parity(plan)
+                jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, divergence_text)
+                self.assertEqual(jq_output, python_output)
+
+    def test_issue_title_and_body_writes_match_production_jq(self) -> None:
+        """Match Issue title/body write decisions and acknowledgement for six focused cases."""
+        title_base = "Title baseline"
+        body_base = "Body baseline"
+        cases: tuple[tuple[str, dict[str, object]], ...] = (
+            ("title-board-only", {"title_current": "Title captain", "title_desired": title_base}),
+            ("title-backlog-only", {"title_current": title_base, "title_desired": "Title backlog"}),
+            ("title-conflict", {"title_current": "Title captain", "title_desired": "Title backlog"}),
+            ("body-board-only", {"body_current": "Body captain", "body_desired": body_base}),
+            ("body-backlog-only", {"body_current": body_base, "body_desired": "Body backlog"}),
+            ("body-conflict", {"body_current": "Body captain", "body_desired": "Body backlog"}),
+        )
+        for name, overrides in cases:
+            with self.subTest(scenario=name):
+                snapshot, wanted, state, raw_board, cards_tsv, divergence_text = _planner_fixture(
+                    is_issue=True,
+                    **overrides,
                 )
                 plan = plan_board(snapshot, (wanted,), state, force=True, epoch="1700000001")
                 python_output = _serialize_plan_for_jq_parity(plan)
