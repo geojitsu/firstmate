@@ -445,6 +445,14 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/1.architecture/3.helm-sync-python.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/2.api/3.helm-sync-python.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/2.api/guides/helm-project-routing.md",
       "audience": "operator-current"
     },
