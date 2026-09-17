@@ -983,8 +983,9 @@ process_board() {
   # Project field may not have that option yet) so the per-board hot path
   # stays a single jq call, same as before this check grew a second part.
   schema_ok=false missing_projects=
-  IFS=$'\t' read -r schema_ok missing_projects < <(jq -r --argjson records "$(cat "$group_desired")" --argjson registered "$REGISTERED_PROJECTS" --slurpfile routing "$ROUTING_JSON" --arg owner "$owner" --argjson number "$number" --arg default_owner "$OWNER" --argjson default_number "$PROJECT_NUMBER" --arg dispatch "$DISPATCH_STATUS" '
-    .data.user.projectV2.fields.nodes as $fields
+  IFS=$'\t' read -r schema_ok missing_projects < <(jq -r --slurpfile records_wrap "$group_desired" --argjson registered "$REGISTERED_PROJECTS" --slurpfile routing "$ROUTING_JSON" --arg owner "$owner" --argjson number "$number" --arg default_owner "$OWNER" --argjson default_number "$PROJECT_NUMBER" --arg dispatch "$DISPATCH_STATUS" '
+    ($records_wrap[0]) as $records
+    | .data.user.projectV2.fields.nodes as $fields
     | (def has_option($field; $name): any($fields[]; .name == $field and .__typename == "ProjectV2SingleSelectField" and any(.options[]?; .name == $name));
        any($fields[]; .name == "Status" and .__typename == "ProjectV2SingleSelectField")
        and any($fields[]; .name == "Project" and .__typename == "ProjectV2SingleSelectField")
