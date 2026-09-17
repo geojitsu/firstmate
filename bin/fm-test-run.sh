@@ -1325,6 +1325,14 @@ families_for_changed_path() {
       # fm-helm-sync.test.sh, which builds config/helm.json fixtures from it.
       printf '%s\n' "__script__:fm-helm-sync.test.sh"
       ;;
+    python/helm_sync/*)
+      # The pure-Python sync planning slice. Its only exercised entry point is
+      # the jq-parity test, which imports the whole package.
+      printf '%s\n' "__script__:fm-helm-sync-python.test.sh"
+      ;;
+    tests/jq_parity.py)
+      printf '%s\n' "__script__:fm-helm-sync-python.test.sh"
+      ;;
     tests/lib.sh|tests/*-helpers.sh|tests/fixtures.sh)
       families_for_test_reference "$(basename "$path")" \
         || printf '%s\n' "__unmapped__:$path"
