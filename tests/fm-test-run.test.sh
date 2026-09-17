@@ -126,6 +126,11 @@ init_changed_fixture_repo() {
   mkdir -p "$repo/python/helm_sync"
   : >"$repo/python/helm_sync/__init__.py"
   : >"$repo/tests/jq_parity.py"
+  # Coverage references, mirroring the real suite's coverage comment: the
+  # generic source-to-test reference scan finds this suite by these literal
+  # strings rather than a dedicated fm-test-run.sh mapping.
+  printf '# python/helm_sync/__init__.py\n# tests/jq_parity.py\n' \
+    >>"$repo/tests/fm-helm-sync-python.test.sh"
   : >"$repo/tests/fm-backend-herdr-eventwait.test.py"
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/fm-control-lib.sh"
