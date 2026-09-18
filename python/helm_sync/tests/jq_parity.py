@@ -415,7 +415,7 @@ def _planner_fixture(
 
 def _jq_plan_output(
     board: dict[str, object],
-    desired: DesiredCard,
+    desired: DesiredCard | None,
     cards_tsv: str,
     divergences_text: str,
     *,
@@ -424,7 +424,7 @@ def _jq_plan_output(
     hold_kind: str = "",
     tsv_existed: str = "true",
 ) -> bytes:
-    """Run the production planner with one synthetic board item."""
+    """Run the production planner with one synthetic board item, or none when `desired` is `None`."""
     with tempfile.TemporaryDirectory(prefix="helm-jq-plan-") as temp:
         root = Path(temp)
         board_path = root / "board.json"
@@ -435,43 +435,47 @@ def _jq_plan_output(
         divergences_path = root / "divergences.tsv"
         fps_path = root / "fps.tsv"
         board_path.write_bytes(_compact_json(board))
-        desired_record = {
-            "id": str(desired.task),
-            "state": state,
-            "home_path": "/fixture/main",
-            "repo": desired.repository or "",
-            "hold_kind": hold_kind,
-            "desired": {
-                "title": desired.title,
-                "body": desired.body,
-                "status": str(desired.status),
-                "kind": str(desired.kind),
-                "project": str(desired.project),
-                "priority_n": desired.priority_n,
-                "priority": str(desired.priority),
-                "board": {"owner": "fixture-owner", "number": 999},
-                "note": desired.note,
-            },
-        }
-        desired_path.write_bytes(_compact_json([desired_record]))
+        if desired is None:
+            desired_path.write_bytes(_compact_json([]))
+            fps_path.write_text("", encoding="utf-8")
+        else:
+            desired_record = {
+                "id": str(desired.task),
+                "state": state,
+                "home_path": "/fixture/main",
+                "repo": desired.repository or "",
+                "hold_kind": hold_kind,
+                "desired": {
+                    "title": desired.title,
+                    "body": desired.body,
+                    "status": str(desired.status),
+                    "kind": str(desired.kind),
+                    "project": str(desired.project),
+                    "priority_n": desired.priority_n,
+                    "priority": str(desired.priority),
+                    "board": {"owner": "fixture-owner", "number": 999},
+                    "note": desired.note,
+                },
+            }
+            desired_path.write_bytes(_compact_json([desired_record]))
+            body_hash = hashlib.sha256(desired.body.encode("utf-8")).hexdigest()
+            fingerprint = hashlib.sha256(
+                "\0".join(
+                    (
+                        str(desired.status),
+                        str(desired.priority),
+                        str(desired.project),
+                        str(desired.kind),
+                        desired.title,
+                        body_hash,
+                    )
+                ).encode("utf-8")
+            ).hexdigest()
+            fps_path.write_text(f"{desired.task}\t{fingerprint}\n", encoding="utf-8")
         cards_path.write_text(cards_tsv + "\n", encoding="utf-8")
         deleted_path.write_text(deleted_tsv, encoding="utf-8")
         markers_path.write_text("", encoding="utf-8")
         divergences_path.write_text(divergences_text, encoding="utf-8")
-        body_hash = hashlib.sha256(desired.body.encode("utf-8")).hexdigest()
-        fingerprint = hashlib.sha256(
-            "\0".join(
-                (
-                    str(desired.status),
-                    str(desired.priority),
-                    str(desired.project),
-                    str(desired.kind),
-                    desired.title,
-                    body_hash,
-                )
-            ).encode("utf-8")
-        ).hexdigest()
-        fps_path.write_text(f"{desired.task}\t{fingerprint}\n", encoding="utf-8")
         result = subprocess.run(
             [
                 "jq",
@@ -835,6 +839,29 @@ class HelmSyncPythonParityTests(unittest.TestCase):
         plan = plan_board(extended_snapshot, (wanted,), state, force=True, epoch="1700000001")
         python_output = _serialize_plan_for_jq_parity(plan)
         jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, divergence_text)
+        self.assertEqual(jq_output, python_output)
+
+    def test_missing_phase_with_no_desired_records_touches_no_orphan_card(self) -> None:
+        """Guard missing_entries: leave every board card alone when this board's desired set is empty."""
+        board_ref = BoardRef(Owner("fixture-owner"), ProjectNumber(999))
+        schema = _all_fields()
+        orphan_task, orphan_item, orphan_node = "fixture-empty-backlog-orphan", "PVTI_empty_orphan", "DRAFT_empty_orphan"
+        orphan_card = _draft_card_snapshot(orphan_item, orphan_task, "Queued", orphan_node)
+        snapshot = BoardSnapshot(board_ref, (orphan_card,), schema)
+        state = SyncState()
+        raw_board = {
+            "data": {
+                "user": {
+                    "projectV2": {
+                        "fields": {"nodes": _raw_field_nodes()},
+                        "items": {"nodes": [_raw_draft_card(orphan_item, orphan_task, "Queued", orphan_node)]},
+                    }
+                }
+            }
+        }
+        plan = plan_board(snapshot, {}, state, force=True, epoch="1700000001")
+        python_output = _serialize_plan_for_jq_parity(plan)
+        jq_output = _jq_plan_output(raw_board, None, "", "")
         self.assertEqual(jq_output, python_output)
 
     def test_deleted_card_for_a_live_task_raises_a_captain_hold(self) -> None:

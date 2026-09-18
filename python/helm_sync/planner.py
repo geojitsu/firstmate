@@ -622,8 +622,12 @@ def _missing_phase_actions(
     port does not yet raise a note for), a valid but never-before-seen task id
     (a captain-created card with no backlog task) wakes intake instead of
     being closed when the identity cache already existed before this run,
-    and every other orphaned task is closed.
+    and every other orphaned task is closed. When this board's desired set is
+    empty, no card on the board is touched, matching jq's own guard against a
+    failed or empty backlog read mass-closing or mass-waking every card.
     """
+    if not desired_by_task:
+        return []
     done_option = _option(snapshot.fields, "Status", "Done")
     status_field = _field_id(snapshot.fields, "Status")
     actions: list[PlanAction] = []
