@@ -24,6 +24,7 @@ from helm_sync.model import (
     BoardSnapshot,
     CardBaseline,
     CardSnapshot,
+    DeletedCardTombstone,
     DesiredCard,
     DivergenceKey,
     DraftContent,
@@ -417,6 +418,9 @@ def _jq_plan_output(
     desired: DesiredCard,
     cards_tsv: str,
     divergences_text: str,
+    *,
+    state: str = "queued",
+    deleted_tsv: str = "",
 ) -> bytes:
     """Run the production planner with one synthetic board item."""
     with tempfile.TemporaryDirectory(prefix="helm-jq-plan-") as temp:
@@ -431,7 +435,7 @@ def _jq_plan_output(
         board_path.write_bytes(_compact_json(board))
         desired_record = {
             "id": str(desired.task),
-            "state": "queued",
+            "state": state,
             "home_path": "/fixture/main",
             "repo": desired.repository or "",
             "desired": {
@@ -448,7 +452,7 @@ def _jq_plan_output(
         }
         desired_path.write_bytes(_compact_json([desired_record]))
         cards_path.write_text(cards_tsv + "\n", encoding="utf-8")
-        deleted_path.write_text("", encoding="utf-8")
+        deleted_path.write_text(deleted_tsv, encoding="utf-8")
         markers_path.write_text("", encoding="utf-8")
         divergences_path.write_text(divergences_text, encoding="utf-8")
         body_hash = hashlib.sha256(desired.body.encode("utf-8")).hexdigest()
@@ -524,6 +528,82 @@ def _jq_plan_output(
             capture_output=True,
         )
         return result.stdout
+
+
+def _raw_field_nodes() -> list[dict[str, object]]:
+    """Build the raw board schema nodes matching the `_all_fields()` fixture schema."""
+    return [
+        {
+            "__typename": "ProjectV2SingleSelectField",
+            "id": field.id,
+            "name": field.name,
+            "options": [{"id": option_id, "name": option_name} for option_name, option_id in field.options.items()],
+        }
+        for field in _all_fields().values()
+    ]
+
+
+def _raw_draft_card(item: str, task: str, status: str, node: str) -> dict[str, object]:
+    """Build one raw board draft card claiming the given task in its body line 1."""
+    body = f"{TICK}{task}{TICK}\n\nbody"
+    return {
+        "id": item,
+        "content": {"__typename": "DraftIssue", "id": node, "title": "T", "body": body},
+        "fieldValues": {
+            "nodes": [
+                {"field": {"name": "Status"}, "name": status, "optionId": _status_id(status)},
+                {"field": {"name": "Project"}, "name": "sample", "optionId": "option_project_sample"},
+                {"field": {"name": "Kind"}, "name": "ship", "optionId": "option_kind_ship"},
+                {"field": {"name": "Priority"}, "name": "P3", "optionId": "option_priority_3"},
+            ]
+        },
+    }
+
+
+def _draft_card_snapshot(item: str, task: str, status: str, node: str) -> CardSnapshot:
+    """Build the Python-side counterpart of `_raw_draft_card`."""
+    body = f"{TICK}{task}{TICK}\n\nbody"
+    return CardSnapshot(
+        ItemId(item),
+        DraftContent(node, "T", body),
+        {
+            "Status": FieldValue("Status", status, OptionId(_status_id(status))),
+            "Project": FieldValue("Project", "sample", OptionId("option_project_sample")),
+            "Kind": FieldValue("Kind", "ship", OptionId("option_kind_ship")),
+            "Priority": FieldValue("Priority", "P3", OptionId("option_priority_3")),
+        },
+        TaskId(task),
+    )
+
+
+def _deleted_task_fixture(
+    task_name: str, item_name: str, status: str, *, state: str
+) -> tuple[DesiredCard, CardBaseline, BoardSnapshot, str]:
+    """Build a live task whose card was previously cached but is now gone from the board."""
+    task = TaskId(task_name)
+    item = ItemId(item_name)
+    board_ref = BoardRef(Owner("fixture-owner"), ProjectNumber(999))
+    body = f"{TICK}{task}{TICK}\n\nbody"
+    wanted = DesiredCard(
+        task,
+        HomeId("main"),
+        board_ref,
+        "T",
+        body,
+        StatusName(status),
+        KindName("ship"),
+        ProjectName("sample"),
+        PriorityName("P3"),
+        "3",
+        home_path=Path("/fixture/main"),
+    )
+    status_option = _status_id(status)
+    baseline = CardBaseline(task, item, board_ref, f"DRAFT_{item_name}", False, status_option, "option_priority_3", "T", body, "1699999999", True)
+    snapshot = BoardSnapshot(board_ref, (), _all_fields())
+    cards_tsv = "\t".join(
+        (str(task), str(item), f"DRAFT_{item_name}", "draft", status_option, "option_priority_3", _b64("T"), _b64(body), "1699999999", "fixture-owner", "999")
+    )
+    return wanted, baseline, snapshot, cards_tsv
 
 
 class HelmSyncPythonParityTests(unittest.TestCase):
@@ -683,6 +763,80 @@ class HelmSyncPythonParityTests(unittest.TestCase):
         plan = plan_board(snapshot, (wanted,), state, force=True, epoch="1700000001")
         python_output = _serialize_plan_for_jq_parity(plan)
         jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, divergence_text)
+        self.assertEqual(jq_output, python_output)
+
+    def test_missing_card_with_no_backlog_record_closes_to_done(self) -> None:
+        """Close a previously synced card whose task left every backlog, matching missing_entries."""
+        snapshot, wanted, state, raw_board, cards_tsv, divergence_text = _planner_fixture()
+        missing_task, missing_item, missing_node = "fixture-missing-task", "PVTI_missing", "DRAFT_missing"
+        missing_card = _draft_card_snapshot(missing_item, missing_task, "Queued", missing_node)
+        extended_snapshot = BoardSnapshot(snapshot.board, snapshot.cards + (missing_card,), snapshot.fields)
+        raw_board["data"]["user"]["projectV2"]["items"]["nodes"].append(
+            _raw_draft_card(missing_item, missing_task, "Queued", missing_node)
+        )
+        missing_body = f"{TICK}{missing_task}{TICK}\n\nbody"
+        missing_cache_row = "\t".join(
+            (missing_task, missing_item, missing_node, "draft", "option_status_queued", "option_priority_3",
+             _b64("T"), _b64(missing_body), "1699999999", "fixture-owner", "999")
+        )
+        merged_cards_tsv = cards_tsv + "\n" + missing_cache_row
+        plan = plan_board(extended_snapshot, (wanted,), state, force=True, epoch="1700000001")
+        python_output = _serialize_plan_for_jq_parity(plan)
+        jq_output = _jq_plan_output(raw_board, wanted, merged_cards_tsv, divergence_text)
+        self.assertEqual(jq_output, python_output)
+
+    def test_missing_card_already_done_is_left_alone(self) -> None:
+        """Leave an already-Done orphaned card untouched, matching missing_entries' skip."""
+        snapshot, wanted, state, raw_board, cards_tsv, divergence_text = _planner_fixture()
+        missing_task, missing_item, missing_node = "fixture-missing-done-task", "PVTI_missing_done", "DRAFT_missing_done"
+        missing_card = _draft_card_snapshot(missing_item, missing_task, "Done", missing_node)
+        extended_snapshot = BoardSnapshot(snapshot.board, snapshot.cards + (missing_card,), snapshot.fields)
+        raw_board["data"]["user"]["projectV2"]["items"]["nodes"].append(
+            _raw_draft_card(missing_item, missing_task, "Done", missing_node)
+        )
+        plan = plan_board(extended_snapshot, (wanted,), state, force=True, epoch="1700000001")
+        python_output = _serialize_plan_for_jq_parity(plan)
+        jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, divergence_text)
+        self.assertEqual(jq_output, python_output)
+
+    def test_deleted_card_for_a_live_task_raises_a_captain_hold(self) -> None:
+        """Preserve a captain's card deletion and raise one hold instead of recreating it."""
+        wanted, baseline, snapshot, cards_tsv = _deleted_task_fixture(
+            "fixture-deleted-task", "PVTI_deleted_old", "Queued", state="queued"
+        )
+        state = SyncState(cards={wanted.task: baseline})
+        plan = plan_board(snapshot, (wanted,), state, force=True, epoch="1700000001")
+        python_output = _serialize_plan_for_jq_parity(plan)
+        raw_board = {"data": {"user": {"projectV2": {"fields": {"nodes": _raw_field_nodes()}, "items": {"nodes": []}}}}}
+        jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, "", state="queued")
+        self.assertEqual(jq_output, python_output)
+
+    def test_deleted_card_for_an_already_done_task_is_retained_silently(self) -> None:
+        """Retain a tombstoned deletion for a Done task without recreating the card or waking."""
+        wanted, baseline, snapshot, cards_tsv = _deleted_task_fixture(
+            "fixture-deleted-done-task", "PVTI_deleted_done", "Done", state="done"
+        )
+        state = SyncState(
+            cards={wanted.task: baseline},
+            tombstones={wanted.task: DeletedCardTombstone(wanted.task, baseline.item)},
+        )
+        plan = plan_board(snapshot, (wanted,), state, force=True, epoch="1700000001")
+        python_output = _serialize_plan_for_jq_parity(plan)
+        raw_board = {"data": {"user": {"projectV2": {"fields": {"nodes": _raw_field_nodes()}, "items": {"nodes": []}}}}}
+        deleted_tsv = f"{wanted.task}\t{baseline.item}\n"
+        jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, "", state="done", deleted_tsv=deleted_tsv)
+        self.assertEqual(jq_output, python_output)
+
+    def test_deleted_card_for_a_done_task_without_a_tombstone_still_recreates(self) -> None:
+        """Match jq's existing recreate behavior for a Done task never previously tombstoned."""
+        wanted, baseline, snapshot, cards_tsv = _deleted_task_fixture(
+            "fixture-deleted-done-notomb-task", "PVTI_deleted_done_notomb", "Done", state="done"
+        )
+        state = SyncState(cards={wanted.task: baseline})
+        plan = plan_board(snapshot, (wanted,), state, force=True, epoch="1700000001")
+        python_output = _serialize_plan_for_jq_parity(plan)
+        raw_board = {"data": {"user": {"projectV2": {"fields": {"nodes": _raw_field_nodes()}, "items": {"nodes": []}}}}}
+        jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, "", state="done")
         self.assertEqual(jq_output, python_output)
 
     def test_config_boundary_is_opt_in_and_validates_board_identity(self) -> None:

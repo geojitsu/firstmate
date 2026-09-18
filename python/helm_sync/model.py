@@ -452,6 +452,15 @@ class CloseMissingCard:
 
 
 @dataclass(frozen=True)
+class SkipRecreatingDeletedCard:
+    """Describe declining to recreate a card whose cached item left the board."""
+
+    task: TaskId
+    tombstone: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class RecordDispatchRequest:
     """Describe persisting a new captain dispatch request."""
 
@@ -482,8 +491,11 @@ class HoldDeletedTask:
     """Describe placing a captain hold after deletion of a live card."""
 
     task: TaskId
-    home_path: Path
+    item: ItemId
+    home_path: Path | None
     reason: str
+    wakes: tuple[WakeRequest, ...] = ()
+    divergence_changes: tuple[DivergenceChange, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -523,6 +535,7 @@ PlanAction: TypeAlias = (
     | UpdateDraft
     | UpdateIssueFields
     | CloseMissingCard
+    | SkipRecreatingDeletedCard
     | RecordDispatchRequest
     | ClearDispatchRequest
     | WritePriorityToBacklog
