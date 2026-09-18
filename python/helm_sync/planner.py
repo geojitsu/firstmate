@@ -14,6 +14,7 @@ from .model import (
     BoardSnapshot,
     CardBaseline,
     CardSnapshot,
+    CloseMissingCard,
     CreateDraft,
     DesiredCard,
     DivergenceChange,
@@ -22,15 +23,19 @@ from .model import (
     FieldWrite,
     FieldName,
     Fingerprint,
+    HoldDeletedTask,
     ItemId,
+    KeepDeletedTombstone,
     NoChange,
     OptionId,
     PlanAction,
     Signature,
+    SkipRecreatingDeletedCard,
     SyncState,
     TaskId,
     UpdateDraft,
     UpdateIssueFields,
+    WakeMissingCard,
     WakeRequest,
     parse_item_id,
     parse_task_id,
@@ -607,6 +612,121 @@ def _unsupported_repo_note(
     return "", ()
 
 
+def _missing_phase_actions(
+    snapshot: BoardSnapshot, desired_by_task: Mapping[TaskId, DesiredCard], state: SyncState
+) -> list[PlanAction]:
+    """Close or wake on previously seen and never-before-seen orphan cards.
+
+    Mirrors ``bin/fm-helm-lib.sh``'s ``missing_entries``: a card with no valid
+    task-id body is left untouched (matching jq's "ignore" branch, which this
+    port does not yet raise a note for), a valid but never-before-seen task id
+    (a captain-created card with no backlog task) wakes intake instead of
+    being closed when the identity cache already existed before this run,
+    and every other orphaned task is closed. When this board's desired set is
+    empty, no card on the board is touched, matching jq's own guard against a
+    failed or empty backlog read mass-closing or mass-waking every card.
+    """
+    if not desired_by_task:
+        return []
+    done_option = _option(snapshot.fields, "Status", "Done")
+    status_field = _field_id(snapshot.fields, "Status")
+    actions: list[PlanAction] = []
+    for card in snapshot.cards:
+        task = _item_task(card)
+        if task is None or task in desired_by_task:
+            continue
+        if _current_option(card, "Status") == done_option:
+            continue
+        item = parse_item_id(card.item)
+        if state.cache_existed and task not in state.cards:
+            fingerprint = str(item)
+            wakes: tuple[WakeRequest, ...] = ()
+            if not _divergence_exists(state.divergences, "new-card", task, item, fingerprint):
+                wakes = (
+                    WakeRequest(
+                        f"helm-new-card:{task}",
+                        f"check: captain added Helm card {task} with no backlog task; run intake",
+                    ),
+                )
+            actions.append(
+                WakeMissingCard(
+                    task=task,
+                    item=item,
+                    wakes=wakes,
+                    divergence_changes=(DivergenceChange("new-card", "keep", str(item), fingerprint),),
+                )
+            )
+            continue
+        actions.append(
+            CloseMissingCard(
+                task=task,
+                item=item,
+                field_write=FieldWrite(status_field, "Status", "Done", OptionId(done_option)),
+                expected=card,
+                acknowledge={
+                    "new": False,
+                    "text": False,
+                    "fields": [{"name": "Status", "value": "Done", "option": done_option}],
+                },
+            )
+        )
+    return actions
+
+
+_DELETED_CARD_CHOICES = "the task is queued: cancel it (Done), mark it done, or was the card deleted by mistake"
+
+
+def _deleted_phase_actions(
+    snapshot: BoardSnapshot,
+    desired_by_task: Mapping[TaskId, DesiredCard],
+    state: SyncState,
+) -> list[PlanAction]:
+    """Preserve a captain-deleted card instead of silently recreating it.
+
+    Mirrors ``bin/fm-helm-lib.sh``'s ``deleted_entries``: a cached task whose
+    item id is gone from the board and whose task id has no replacement card
+    is either retained silently (task already Done, or already under an
+    existing captain hold) or raises a captain hold. This port does not
+    distinguish in-flight/blocked task states from queued, since
+    ``DesiredCard`` carries no such field; every hold uses the same
+    queued-style choices text.
+    """
+    item_set = {card.item for card in snapshot.cards}
+    line1_tasks = {task for card in snapshot.cards if (task := _item_task(card)) is not None}
+    actions: list[PlanAction] = []
+    for task, baseline in state.cards.items():
+        if baseline.board != snapshot.board:
+            continue
+        if baseline.item in item_set or task in line1_tasks:
+            continue
+        wanted = desired_by_task.get(task)
+        if wanted is None:
+            continue
+        if str(wanted.status) == "Done" or wanted.hold_kind == "captain":
+            actions.append(KeepDeletedTombstone(task, baseline.item))
+            continue
+        fingerprint = str(baseline.item)
+        wakes: tuple[WakeRequest, ...] = ()
+        if not _divergence_exists(state.divergences, "card-deleted", task, baseline.item, fingerprint):
+            wakes = (
+                WakeRequest(
+                    f"helm-card-deleted:{task}",
+                    f"check: captain deleted Helm card {task} ({_DELETED_CARD_CHOICES})",
+                ),
+            )
+        actions.append(
+            HoldDeletedTask(
+                task=task,
+                item=baseline.item,
+                home_path=wanted.home_path,
+                reason=f"Helm card deleted; {_DELETED_CARD_CHOICES}.",
+                wakes=wakes,
+                divergence_changes=(DivergenceChange("card-deleted", "keep", str(baseline.item), fingerprint),),
+            )
+        )
+    return actions
+
+
 def plan_board(
     snapshot: BoardSnapshot,
     desired: Mapping[TaskId, DesiredCard] | Sequence[DesiredCard],
@@ -644,12 +764,22 @@ def plan_board(
         if task in cards_by_task:
             raise PlanError(f"duplicate Helm cards for {task}")
         cards_by_task[task] = card
+    item_set = {card.item for card in snapshot.cards}
 
     actions: list[PlanAction] = []
     for task, wanted in desired_by_task.items():
         current = cards_by_task.get(task)
         old = state.cards.get(task)
         if current is None:
+            tombstone = state.tombstones.get(task)
+            if tombstone is not None:
+                note, _ = _unsupported_repo_note(wanted, state)
+                actions.append(SkipRecreatingDeletedCard(task, f"{tombstone.task}\t{tombstone.item}", note))
+                continue
+            if old is not None and str(wanted.status) != "Done" and old.item and old.item not in item_set:
+                note, _ = _unsupported_repo_note(wanted, state)
+                actions.append(SkipRecreatingDeletedCard(task, "", note))
+                continue
             note, note_changes = _unsupported_repo_note(wanted, state)
             field_writes = _writes(
                 snapshot.fields,
@@ -698,6 +828,9 @@ def plan_board(
             )
         )
 
+    actions.extend(_missing_phase_actions(snapshot, desired_by_task, state))
+    actions.extend(_deleted_phase_actions(snapshot, desired_by_task, state))
+
     canonical = [
         {
             "item": str(card.item),
@@ -718,6 +851,16 @@ def _legacy_action_bytes(action: PlanAction) -> bytes:
     """Project a typed card decision to the live jq stream for parity tests."""
     if isinstance(action, CreateDraft):
         return _legacy_create_bytes(action)
+    if isinstance(action, CloseMissingCard):
+        return _legacy_missing_close_bytes(action)
+    if isinstance(action, WakeMissingCard):
+        return _legacy_missing_wake_bytes(action)
+    if isinstance(action, KeepDeletedTombstone):
+        return _legacy_deleted_retain_bytes(action)
+    if isinstance(action, HoldDeletedTask):
+        return _legacy_deleted_hold_bytes(action)
+    if isinstance(action, SkipRecreatingDeletedCard):
+        return _legacy_skip_deleted_bytes(action)
     if not isinstance(action, (NoChange, UpdateDraft, UpdateIssueFields)):
         return b""
     baseline = action.baseline
@@ -824,6 +967,63 @@ def _legacy_create_bytes(action: CreateDraft) -> bytes:
         _json({"new": False, "text": False, "fields": [{"name": w.name, "value": w.value, "option": str(w.option_id)} for w in writes]}),
         str(action.fingerprint),
         action.note,
+    )
+    return "\0".join(values).encode("utf-8") + b"\0"
+
+
+def _legacy_skip_deleted_bytes(action: SkipRecreatingDeletedCard) -> bytes:
+    values = (
+        "record", "skip", str(action.task), "", "", "", "", "", "", "", "", "", "", "", "",
+        action.tombstone, "", "", "", "", "", action.note,
+    )
+    return "\0".join(values).encode("utf-8") + b"\0"
+
+
+def _legacy_missing_close_bytes(action: CloseMissingCard) -> bytes:
+    write = action.field_write
+    fields_text = _RS.join((write.field_id, write.name, write.value, str(write.option_id)))
+    values = (
+        "missing", "close", str(action.task), str(action.item), "", "", "", "",
+        fields_text, "", "", "", "", "", "", "", "",
+        _snapshot_json(action.expected), "", _json(dict(action.acknowledge)), "", "",
+    )
+    return "\0".join(values).encode("utf-8") + b"\0"
+
+
+def _legacy_missing_wake_bytes(action: WakeMissingCard) -> bytes:
+    wakes_text = _US.join(_RS.join((wake.key, wake.payload)) for wake in action.wakes)
+    div_text = _US.join(
+        _RS.join((change.kind, change.action, change.item, change.fingerprint))
+        for change in action.divergence_changes
+    )
+    values = (
+        "missing", "wake", str(action.task), str(action.item), "", "", "", "",
+        "", wakes_text, "", "", div_text, "", "", "", "",
+        "", "", "", "", "",
+    )
+    return "\0".join(values).encode("utf-8") + b"\0"
+
+
+def _legacy_deleted_retain_bytes(action: KeepDeletedTombstone) -> bytes:
+    tombstone = f"{action.task}\t{action.item}"
+    values = (
+        "deleted", "retain", str(action.task), "", "", "", "", "", "", "", "", "", "", "", "",
+        tombstone, "", "", "", "", "", "",
+    )
+    return "\0".join(values).encode("utf-8") + b"\0"
+
+
+def _legacy_deleted_hold_bytes(action: HoldDeletedTask) -> bytes:
+    tombstone = f"{action.task}\t{action.item}"
+    wakes_text = _US.join(_RS.join((wake.key, wake.payload)) for wake in action.wakes)
+    div_text = _US.join(
+        _RS.join((change.kind, change.action, change.item, change.fingerprint))
+        for change in action.divergence_changes
+    )
+    home = str(action.home_path) if action.home_path else ""
+    values = (
+        "deleted", "hold", str(action.task), str(action.item), "", "", "", "", "",
+        wakes_text, "", "", div_text, "", home, tombstone, action.reason, "", "", "", "", "",
     )
     return "\0".join(values).encode("utf-8") + b"\0"
 

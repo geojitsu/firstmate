@@ -181,6 +181,7 @@ class DesiredCard:
     home_path: Path | None = None
     note: str = ""
     repository: str | None = None
+    hold_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -307,6 +308,7 @@ class SyncState:
     poll_signatures: Mapping[BoardRef, Signature] = field(default_factory=dict)
     completed_input_hash: InputHash | None = None
     forced_resume: bool = False
+    cache_existed: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cards", MappingProxyType(dict(self.cards)))
@@ -452,6 +454,25 @@ class CloseMissingCard:
 
 
 @dataclass(frozen=True)
+class WakeMissingCard:
+    """Describe leaving a never-before-seen orphan card untouched but waking intake."""
+
+    task: TaskId
+    item: ItemId
+    wakes: tuple[WakeRequest, ...] = ()
+    divergence_changes: tuple[DivergenceChange, ...] = ()
+
+
+@dataclass(frozen=True)
+class SkipRecreatingDeletedCard:
+    """Describe declining to recreate a card whose cached item left the board."""
+
+    task: TaskId
+    tombstone: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class RecordDispatchRequest:
     """Describe persisting a new captain dispatch request."""
 
@@ -482,8 +503,11 @@ class HoldDeletedTask:
     """Describe placing a captain hold after deletion of a live card."""
 
     task: TaskId
-    home_path: Path
+    item: ItemId
+    home_path: Path | None
     reason: str
+    wakes: tuple[WakeRequest, ...] = ()
+    divergence_changes: tuple[DivergenceChange, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -523,6 +547,8 @@ PlanAction: TypeAlias = (
     | UpdateDraft
     | UpdateIssueFields
     | CloseMissingCard
+    | WakeMissingCard
+    | SkipRecreatingDeletedCard
     | RecordDispatchRequest
     | ClearDispatchRequest
     | WritePriorityToBacklog
