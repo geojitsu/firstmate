@@ -150,6 +150,8 @@ def render_card(
         home_path = None
     board = board_for_project(project_name, route_map, default_board)
     note = "" if project_name is not None else f"fm-helm-sync: unsupported repository {repo or ''} for {task}; using other"
+    raw_hold_kind = _value(record, "hold_kind")
+    hold_kind = str(raw_hold_kind) if raw_hold_kind else None
     return DesiredCard(
         task=task,
         home=HomeId(str(home_id)),
@@ -165,6 +167,7 @@ def render_card(
         home_path=home_path,
         note=note,
         repository=repo,
+        hold_kind=hold_kind,
     )
 
 

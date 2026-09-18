@@ -421,6 +421,7 @@ def _jq_plan_output(
     *,
     state: str = "queued",
     deleted_tsv: str = "",
+    hold_kind: str = "",
 ) -> bytes:
     """Run the production planner with one synthetic board item."""
     with tempfile.TemporaryDirectory(prefix="helm-jq-plan-") as temp:
@@ -438,6 +439,7 @@ def _jq_plan_output(
             "state": state,
             "home_path": "/fixture/main",
             "repo": desired.repository or "",
+            "hold_kind": hold_kind,
             "desired": {
                 "title": desired.title,
                 "body": desired.body,
@@ -577,7 +579,7 @@ def _draft_card_snapshot(item: str, task: str, status: str, node: str) -> CardSn
 
 
 def _deleted_task_fixture(
-    task_name: str, item_name: str, status: str, *, state: str
+    task_name: str, item_name: str, status: str, *, state: str, hold_kind: str = ""
 ) -> tuple[DesiredCard, CardBaseline, BoardSnapshot, str]:
     """Build a live task whose card was previously cached but is now gone from the board."""
     task = TaskId(task_name)
@@ -596,6 +598,7 @@ def _deleted_task_fixture(
         PriorityName("P3"),
         "3",
         home_path=Path("/fixture/main"),
+        hold_kind=hold_kind or None,
     )
     status_option = _status_id(status)
     baseline = CardBaseline(task, item, board_ref, f"DRAFT_{item_name}", False, status_option, "option_priority_3", "T", body, "1699999999", True)
@@ -780,9 +783,28 @@ class HelmSyncPythonParityTests(unittest.TestCase):
              _b64("T"), _b64(missing_body), "1699999999", "fixture-owner", "999")
         )
         merged_cards_tsv = cards_tsv + "\n" + missing_cache_row
+        missing_baseline = CardBaseline(
+            TaskId(missing_task), ItemId(missing_item), snapshot.board, missing_node, False,
+            "option_status_queued", "option_priority_3", "T", missing_body, "1699999999", True,
+        )
+        state = SyncState(cards={**state.cards, TaskId(missing_task): missing_baseline})
         plan = plan_board(extended_snapshot, (wanted,), state, force=True, epoch="1700000001")
         python_output = _serialize_plan_for_jq_parity(plan)
         jq_output = _jq_plan_output(raw_board, wanted, merged_cards_tsv, divergence_text)
+        self.assertEqual(jq_output, python_output)
+
+    def test_missing_card_never_before_seen_wakes_intake_without_closing(self) -> None:
+        """Wake intake instead of closing an orphan card jq's old cache never saw."""
+        snapshot, wanted, state, raw_board, cards_tsv, divergence_text = _planner_fixture()
+        missing_task, missing_item, missing_node = "fixture-new-orphan-task", "PVTI_new_orphan", "DRAFT_new_orphan"
+        missing_card = _draft_card_snapshot(missing_item, missing_task, "Queued", missing_node)
+        extended_snapshot = BoardSnapshot(snapshot.board, snapshot.cards + (missing_card,), snapshot.fields)
+        raw_board["data"]["user"]["projectV2"]["items"]["nodes"].append(
+            _raw_draft_card(missing_item, missing_task, "Queued", missing_node)
+        )
+        plan = plan_board(extended_snapshot, (wanted,), state, force=True, epoch="1700000001")
+        python_output = _serialize_plan_for_jq_parity(plan)
+        jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, divergence_text)
         self.assertEqual(jq_output, python_output)
 
     def test_missing_card_already_done_is_left_alone(self) -> None:
@@ -825,6 +847,18 @@ class HelmSyncPythonParityTests(unittest.TestCase):
         raw_board = {"data": {"user": {"projectV2": {"fields": {"nodes": _raw_field_nodes()}, "items": {"nodes": []}}}}}
         deleted_tsv = f"{wanted.task}\t{baseline.item}\n"
         jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, "", state="done", deleted_tsv=deleted_tsv)
+        self.assertEqual(jq_output, python_output)
+
+    def test_deleted_card_under_existing_captain_hold_is_retained_silently(self) -> None:
+        """Retain a deletion silently under a live captain hold, even though the task isn't Done."""
+        wanted, baseline, snapshot, cards_tsv = _deleted_task_fixture(
+            "fixture-deleted-hold-task", "PVTI_deleted_hold", "Waiting on you", state="queued", hold_kind="captain"
+        )
+        state = SyncState(cards={wanted.task: baseline})
+        plan = plan_board(snapshot, (wanted,), state, force=True, epoch="1700000001")
+        python_output = _serialize_plan_for_jq_parity(plan)
+        raw_board = {"data": {"user": {"projectV2": {"fields": {"nodes": _raw_field_nodes()}, "items": {"nodes": []}}}}}
+        jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, "", state="queued", hold_kind="captain")
         self.assertEqual(jq_output, python_output)
 
     def test_deleted_card_for_a_done_task_without_a_tombstone_still_recreates(self) -> None:

@@ -181,6 +181,7 @@ class DesiredCard:
     home_path: Path | None = None
     note: str = ""
     repository: str | None = None
+    hold_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -452,6 +453,16 @@ class CloseMissingCard:
 
 
 @dataclass(frozen=True)
+class WakeMissingCard:
+    """Describe leaving a never-before-seen orphan card untouched but waking intake."""
+
+    task: TaskId
+    item: ItemId
+    wakes: tuple[WakeRequest, ...] = ()
+    divergence_changes: tuple[DivergenceChange, ...] = ()
+
+
+@dataclass(frozen=True)
 class SkipRecreatingDeletedCard:
     """Describe declining to recreate a card whose cached item left the board."""
 
@@ -535,6 +546,7 @@ PlanAction: TypeAlias = (
     | UpdateDraft
     | UpdateIssueFields
     | CloseMissingCard
+    | WakeMissingCard
     | SkipRecreatingDeletedCard
     | RecordDispatchRequest
     | ClearDispatchRequest
