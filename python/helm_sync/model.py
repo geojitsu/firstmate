@@ -308,6 +308,7 @@ class SyncState:
     poll_signatures: Mapping[BoardRef, Signature] = field(default_factory=dict)
     completed_input_hash: InputHash | None = None
     forced_resume: bool = False
+    cache_existed: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cards", MappingProxyType(dict(self.cards)))

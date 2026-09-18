@@ -422,6 +422,7 @@ def _jq_plan_output(
     state: str = "queued",
     deleted_tsv: str = "",
     hold_kind: str = "",
+    tsv_existed: str = "true",
 ) -> bytes:
     """Run the production planner with one synthetic board item."""
     with tempfile.TemporaryDirectory(prefix="helm-jq-plan-") as temp:
@@ -504,7 +505,7 @@ def _jq_plan_output(
                 "1700000001",
                 "--arg",
                 "tsv_existed",
-                "true",
+                tsv_existed,
                 "--arg",
                 "retain_source",
                 "0",
@@ -805,6 +806,21 @@ class HelmSyncPythonParityTests(unittest.TestCase):
         plan = plan_board(extended_snapshot, (wanted,), state, force=True, epoch="1700000001")
         python_output = _serialize_plan_for_jq_parity(plan)
         jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, divergence_text)
+        self.assertEqual(jq_output, python_output)
+
+    def test_missing_card_on_first_ever_sync_closes_instead_of_waking(self) -> None:
+        """Close an orphan card on a board's first-ever sync, when no identity cache existed yet."""
+        snapshot, wanted, state, raw_board, cards_tsv, divergence_text = _planner_fixture()
+        missing_task, missing_item, missing_node = "fixture-bootstrap-orphan-task", "PVTI_bootstrap_orphan", "DRAFT_bootstrap_orphan"
+        missing_card = _draft_card_snapshot(missing_item, missing_task, "Queued", missing_node)
+        extended_snapshot = BoardSnapshot(snapshot.board, snapshot.cards + (missing_card,), snapshot.fields)
+        raw_board["data"]["user"]["projectV2"]["items"]["nodes"].append(
+            _raw_draft_card(missing_item, missing_task, "Queued", missing_node)
+        )
+        state = SyncState(cards=state.cards, cache_existed=False)
+        plan = plan_board(extended_snapshot, (wanted,), state, force=True, epoch="1700000001")
+        python_output = _serialize_plan_for_jq_parity(plan)
+        jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, divergence_text, tsv_existed="false")
         self.assertEqual(jq_output, python_output)
 
     def test_missing_card_already_done_is_left_alone(self) -> None:

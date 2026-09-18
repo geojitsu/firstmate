@@ -621,7 +621,8 @@ def _missing_phase_actions(
     task-id body is left untouched (matching jq's "ignore" branch, which this
     port does not yet raise a note for), a valid but never-before-seen task id
     (a captain-created card with no backlog task) wakes intake instead of
-    being closed, and every other orphaned, previously-cached task is closed.
+    being closed when the identity cache already existed before this run,
+    and every other orphaned task is closed.
     """
     done_option = _option(snapshot.fields, "Status", "Done")
     status_field = _field_id(snapshot.fields, "Status")
@@ -633,7 +634,7 @@ def _missing_phase_actions(
         if _current_option(card, "Status") == done_option:
             continue
         item = parse_item_id(card.item)
-        if task not in state.cards:
+        if state.cache_existed and task not in state.cards:
             fingerprint = str(item)
             wakes: tuple[WakeRequest, ...] = ()
             if not _divergence_exists(state.divergences, "new-card", task, item, fingerprint):
