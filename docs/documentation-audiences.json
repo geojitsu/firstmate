@@ -525,6 +525,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/bugs/2026-10-13-helm-sync-duplicate-card-failure.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/calm-mode-feasibility.md",
       "audience": "maintainer-verification"
     },
