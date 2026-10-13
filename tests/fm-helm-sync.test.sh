@@ -626,6 +626,42 @@ fi
 pass "a completed task's Done card is left untouched with no wake"
 
 # ---------------------------------------------------------------------------
+# Bad-card isolation: one duplicate task identity must be diagnosable without
+# preventing unrelated cards on the same board from reconciling.
+# ---------------------------------------------------------------------------
+case_dir="$TMP_ROOT/duplicate-card"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] duplicate-task - Duplicate task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
+- [ ] healthy-task - Healthy task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-05)
+## Done
+EOF
+board_json "$(jq -n \
+  --argjson a "$(draft_item duplicate-item-a duplicate-draft-a duplicate-task 'Duplicate task' 'x' Queued queued-status P3 p3-priority)" \
+  --argjson b "$(draft_item duplicate-item-b duplicate-draft-b duplicate-task 'Duplicate task' 'x' Queued queued-status P3 p3-priority)" \
+  --argjson c "$(draft_item healthy-item healthy-draft healthy-task 'Healthy task' 'x' Queued queued-status P3 p3-priority)" \
+  '[$a,$b,$c]')" > "$case_dir/board.json"
+: > "$case_dir/gh.log"; : > "$case_dir/tasks-axi.log"
+out=$(run_sync "$case_dir" "$fb" --force 2>&1) || fail "duplicate-card sync exited nonzero: $out"
+assert_contains "$out" "fixture-owner/999: plan: duplicate Helm cards for duplicate-task" \
+  "a duplicate task card did not identify the failing planner step: $out"
+grep -F 'itemId=healthy-item' "$case_dir/gh.log" | grep -F 'optionId=flight-status' >/dev/null \
+  || fail "a duplicate task card prevented an unrelated healthy card from reconciling"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(run_sync "$case_dir" "$fb" 2>&1) || fail "duplicate-card debounce run exited nonzero: $out"
+[ -z "$out" ] || fail "an unchanged bad card kept waking the watcher: $out"
+if grep -q '^api ' "$case_dir/gh.log"; then
+  fail "an unchanged bad card bypassed the Helm debounce and retried the board"
+fi
+pass "a bad duplicate card is diagnosed and isolated from healthy cards"
+
+# ---------------------------------------------------------------------------
 # Issue tolerance: a card converted to a real issue gets field-only sync.
 # ---------------------------------------------------------------------------
 case_dir="$TMP_ROOT/issue"
