@@ -177,7 +177,7 @@ test_remote_probe_scheduling_keeps_per_mate_lines() { # <parallel|fallback>
   dir="$TMP_ROOT/parallel-lines-$mode"
   home="$dir/home"
   primary="$dir/primary"
-  mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects" "$primary"
+  (umask 077; mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects" "$primary")
   git init -q -b main "$primary"
   cp -R "$ROOT/bin" "$primary/bin"
   printf 'test primary\n' > "$primary/AGENTS.md"

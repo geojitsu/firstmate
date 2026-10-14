@@ -39,6 +39,10 @@
 # the one GitHub read-then-mutate a card needs.  Local work is therefore a
 # handful of processes per run, not dozens per backlog row, so a fleet-sized
 # backlog plans in well under a second and the run budget is spent on writes.
+# A plan entry that identifies an invalid individual card is reported with its
+# phase and reason, then skipped so later entries can continue. Plan-only
+# failures still publish the successful reconciliation/debounce state; board,
+# schema, read, and write failures remain retryable.
 #
 # ## Debounce and run budget
 # The watcher-check path debounces all GitHub work on one SHA-256 hash over every
@@ -901,6 +905,8 @@ fi
 BOARD_INDEX=0
 BOARD_READ_SEQUENCE=0
 BOARD_FAILURES=()
+BOARD_FAILURE_KEYS=()
+BOARD_RETRY_REQUIRED=0
 BOARDS_SUCCEEDED=0
 BOARD_OWNER=
 BOARD_NUMBER=
@@ -911,12 +917,17 @@ GUARD_CONFLICT=0
 CONFLICT_WAKE=0
 
 board_failure() {
-  local key=$1 reason=$2
+  local key=$1 reason=$2 retryable=${3:-1}
   local existing
+  [ "$retryable" -eq 1 ] && BOARD_RETRY_REQUIRED=1
   for existing in "${BOARD_FAILURES[@]}"; do
+    [ "$existing" = "$key"$'\t'"$reason" ] && return 0
+  done
+  BOARD_FAILURES+=("$key"$'\t'"$reason")
+  for existing in "${BOARD_FAILURE_KEYS[@]}"; do
     [ "$existing" = "$key" ] && return 0
   done
-  BOARD_FAILURES+=("$key")
+  BOARD_FAILURE_KEYS+=("$key")
   # Keep board-read failures fail-open. The final diagnostic is surfaced by
   # the watcher adapter, while a transient network failure must not create a
   # durable wake or partial baseline.
@@ -926,9 +937,9 @@ board_failure() {
 publish_board_failure_wakes() {
   local key
   [ "$BOARDS_SUCCEEDED" -gt 0 ] || return 0
-  for key in "${BOARD_FAILURES[@]}"; do
+  for key in "${BOARD_FAILURE_KEYS[@]}"; do
     fm_wake_append check "helm-board-failure:$key" \
-      "check: Helm board $key could not be reconciled; retry the board-specific sync" \
+      "check: Helm board $key could not be reconciled; inspect the sync failure details and retry the board-specific sync" \
       || helm_fail_open "could not enqueue Helm board failure for $key"
   done
 }
@@ -945,7 +956,7 @@ process_board() {
   BOARD_JSON=
   LANDED=
   if ! read_board "$owner" "$number" "$board_file"; then
-    board_failure "$key" "GitHub project read failed"
+    board_failure "$key" "read: GitHub project read failed"
     return 0
   fi
   BOARDS_SUCCEEDED=$((BOARDS_SUCCEEDED + 1))
@@ -962,7 +973,7 @@ process_board() {
   KIND_FIELD_ID=$(field_id Kind)
   PRIORITY_FIELD_ID=$(field_id Priority)
   if [ -z "$STATUS_FIELD_ID" ] || [ -z "$PROJECT_FIELD_ID" ] || [ -z "$KIND_FIELD_ID" ] || [ -z "$PRIORITY_FIELD_ID" ]; then
-    board_failure "$key" "required Helm fields are unavailable"
+    board_failure "$key" "schema: required Helm fields are unavailable"
     publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
     return 0
   fi
@@ -1001,19 +1012,19 @@ process_board() {
     | [$ok, ((($records | map(.desired.project)) + $unmapped | unique) - $have | join(","))] | @tsv
   ' "$BOARD_JSON" 2>/dev/null)
   if [ "$schema_ok" != true ]; then
-    board_failure "$key" "required Helm fields or options are unavailable"
+    board_failure "$key" "schema: required Helm fields or options are unavailable"
     publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
     return 0
   fi
   if [ -n "$missing_projects" ]; then
     if ! fm_helm_ensure_field_options helm_graphql_call "$PROJECT_ID" Project "$missing_projects"; then
-      board_failure "$key" "could not provision the Project field option for $missing_projects"
+      board_failure "$key" "provision: could not provision the Project field option for $missing_projects"
       publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
       return 0
     fi
     BOARD_READ_SEQUENCE=$((BOARD_READ_SEQUENCE + 1))
     if ! read_board "$owner" "$number" "$board_file"; then
-      board_failure "$key" "GitHub project re-read after provisioning failed"
+      board_failure "$key" "read: GitHub project re-read after provisioning failed"
       publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
       return 0
     fi
@@ -1025,7 +1036,7 @@ process_board() {
     PRIORITY_FIELD_ID=$(field_id Priority)
     DISPATCH_OPTION_ID=$(option_id Status "$DISPATCH_STATUS")
     if [ -n "$(missing_project_options "$BOARD_JSON" "$group_desired")" ]; then
-      board_failure "$key" "Project field option for $missing_projects is still missing after provisioning"
+      board_failure "$key" "schema: Project field option for $missing_projects is still missing after provisioning"
       publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
       return 0
     fi
@@ -1039,7 +1050,7 @@ process_board() {
     --arg tsv_existed "$TSV_EXISTED" --arg retain_source "$( [ "$owner" = "$RETAIN_OWNER" ] && [ "$number" = "$RETAIN_NUMBER" ] && printf 1 || printf 0 )" --arg retain_project "$RETAIN_PROJECT" --arg board_owner "$owner" --argjson board_number "$number" \
     --arg default_owner "$OWNER" --argjson default_number "$PROJECT_NUMBER" \
     "$(fm_helm_plan_program)" "$BOARD_JSON" >"$PLAN" \
-    || { board_failure "$key" "could not plan the board reconciliation"; publish_progress || helm_fail_open "could not publish Helm board acknowledgement"; return 0; }
+    || { board_failure "$key" "plan: could not plan the board reconciliation"; publish_progress || helm_fail_open "could not publish Helm board acknowledgement"; return 0; }
 
 # Execute the plan. Each entry is FM_HELM_PLAN_FIELDS NUL-terminated fields.
 E=()
@@ -1068,9 +1079,8 @@ while read_entry; do
   ack_create=${E[18]} ack_write=${E[19]} fingerprint=${E[20]} note=${E[21]}
   [ -z "$note" ] || printf '%s\n' "$note" >&2
   if [ "$phase" = error ]; then
-    board_failure "$key" "$action"
-    publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
-    return 0
+    board_failure "$key" "plan: $action" 0
+    continue
   fi
   if [ "$EXHAUSTED" -eq 1 ]; then
     case "$action" in create|update|close) REMAINING=$((REMAINING + 1)) ;; esac
@@ -1190,8 +1200,8 @@ while read_entry; do
 done
 exec 3<&-
 publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
-  if [ "$BOARD_WRITE_FAILURE" -eq 1 ]; then
-    board_failure "$key" "one or more board writes failed"
+if [ "$BOARD_WRITE_FAILURE" -eq 1 ]; then
+    board_failure "$key" "write: one or more board writes failed"
   elif [ "$owner" = "$RETAIN_OWNER" ] && [ "$number" = "$RETAIN_NUMBER" ]; then
     RETAIN_INDEXED=1
   fi
@@ -1250,14 +1260,22 @@ if [ "$GUARD_CONFLICT" -eq 1 ]; then
   exit 0
 fi
 if [ "${#BOARD_FAILURES[@]}" -gt 0 ]; then
-board_failure_list=$(IFS=', '; printf '%s' "${BOARD_FAILURES[*]}")
-  printf 'fm-helm-sync: %s board(s) could not be reconciled: %s\n' "${#BOARD_FAILURES[@]}" "$board_failure_list"
+  board_failure_list=
+  for board_failure_entry in "${BOARD_FAILURES[@]}"; do
+    board_failure_key=${board_failure_entry%%$'\t'*}
+    board_failure_reason=${board_failure_entry#*$'\t'}
+    if [ -n "$board_failure_list" ]; then
+      board_failure_list+='; '
+    fi
+    board_failure_list+="$board_failure_key: $board_failure_reason"
+  done
+  printf 'fm-helm-sync: %s board(s) could not be reconciled: %s\n' "${#BOARD_FAILURE_KEYS[@]}" "$board_failure_list"
 fi
 if [ $((FAILED + REMAINING)) -gt 0 ]; then
   printf 'fm-helm-sync: partial: %s cards remain\n' $((FAILED + REMAINING))
   exit 0
 fi
-if [ "${#BOARD_FAILURES[@]}" -gt 0 ]; then
+if [ "$BOARD_RETRY_REQUIRED" -eq 1 ]; then
   exit 0
 fi
 
