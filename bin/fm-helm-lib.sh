@@ -608,8 +608,13 @@ fm_helm_plan_program() {
               {phase: "record", action: "skip", task: $r.id, tombstone: $deleted_by_task[$r.id].line, note: $d.note}
             elif $old != null and $old.item != "" and (($old.owner != $board_owner) or (($old.number | tostring) != ($board_number | tostring))) then
               {phase: "record", action: "none", task: $r.id, cache: old_cache($old), note: $d.note}
-            elif $old != null and $r.state != "done" and $old.item != "" and ($item_set[$old.item] | not) then
-              {phase: "record", action: "skip", task: $r.id, note: $d.note}
+            # A cached item missing from this fresh snapshot is not safe to
+            # recreate, even when the backlog row is Done. Teardown retains
+            # Done rows for a while, so the old state exemption could turn a
+            # delayed/partial board read into a second card before
+            # deleted_entries recorded its tombstone.
+            elif $old != null and $old.item != "" and ($item_set[$old.item] | not) then
+              {phase: "record", action: "skip", task: $r.id, tombstone: ($r.id + "\t" + $old.item), note: $d.note}
             else
               [ {id: $status_field, name: "Status", value: $d.status, option: $so},
                 {id: $project_field, name: "Project", value: $d.project, option: $po},

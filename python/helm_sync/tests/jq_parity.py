@@ -24,6 +24,7 @@ from helm_sync.model import (
     BoardSnapshot,
     CardBaseline,
     CardSnapshot,
+    CreateDraft,
     DeletedCardTombstone,
     DesiredCard,
     DivergenceKey,
@@ -39,6 +40,8 @@ from helm_sync.model import (
     PriorityName,
     ProjectName,
     ProjectNumber,
+    KeepDeletedTombstone,
+    SkipRecreatingDeletedCard,
     StatusName,
     SyncState,
     TaskId,
@@ -904,13 +907,16 @@ class HelmSyncPythonParityTests(unittest.TestCase):
         jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, "", state="queued", hold_kind="captain")
         self.assertEqual(jq_output, python_output)
 
-    def test_deleted_card_for_a_done_task_without_a_tombstone_still_recreates(self) -> None:
-        """Match jq's existing recreate behavior for a Done task never previously tombstoned."""
+    def test_deleted_card_for_a_done_task_without_a_tombstone_is_suppressed(self) -> None:
+        """Suppress a stale cached Done card before its deleted-phase tombstone is recorded."""
         wanted, baseline, snapshot, cards_tsv = _deleted_task_fixture(
             "fixture-deleted-done-notomb-task", "PVTI_deleted_done_notomb", "Done", state="done"
         )
         state = SyncState(cards={wanted.task: baseline})
         plan = plan_board(snapshot, (wanted,), state, force=True, epoch="1700000001")
+        self.assertIsInstance(plan.actions[0], SkipRecreatingDeletedCard)
+        self.assertNotIsInstance(plan.actions[0], CreateDraft)
+        self.assertIsInstance(plan.actions[-1], KeepDeletedTombstone)
         python_output = _serialize_plan_for_jq_parity(plan)
         raw_board = {"data": {"user": {"projectV2": {"fields": {"nodes": _raw_field_nodes()}, "items": {"nodes": []}}}}}
         jq_output = _jq_plan_output(raw_board, wanted, cards_tsv, "", state="done")
