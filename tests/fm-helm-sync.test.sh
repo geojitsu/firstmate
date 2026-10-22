@@ -196,7 +196,11 @@ if [ "${1:-}" = api ]; then
           && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
         printf 'applied itemId=%s fieldId=%s optionId=%s\n' "$item_id" "$field_id" "$option_id" >> "$FM_FAKE_GH_LOG"
       done
-      if [ -n "${FM_FAKE_HELM_MUTATION_ERROR:-}" ]; then
+      # FM_FAKE_HELM_MUTATION_FAIL_ITEM, when set alongside FM_FAKE_HELM_MUTATION_ERROR,
+      # narrows the forced failure to that one item's writes so a test can prove a
+      # failing card does not poison a later, unrelated card's write.
+      if [ -n "${FM_FAKE_HELM_MUTATION_ERROR:-}" ] \
+        && { [ -z "${FM_FAKE_HELM_MUTATION_FAIL_ITEM:-}" ] || [ "$item_id" = "$FM_FAKE_HELM_MUTATION_FAIL_ITEM" ]; }; then
         jq -n --arg message "$FM_FAKE_HELM_MUTATION_ERROR" \
           '{errors:[{type:"RATE_LIMITED",message:$message}]}'
         exit 0
@@ -281,6 +285,7 @@ EOF
     FM_FAKE_BOARD_PREWRITE="${FM_FAKE_BOARD_PREWRITE:-}" \
     FM_FAKE_HELM_MUTATION_STALL="${FM_FAKE_HELM_MUTATION_STALL:-}" \
     FM_FAKE_HELM_MUTATION_ERROR="${FM_FAKE_HELM_MUTATION_ERROR:-}" \
+    FM_FAKE_HELM_MUTATION_FAIL_ITEM="${FM_FAKE_HELM_MUTATION_FAIL_ITEM:-}" \
     FM_HELM_MUTATION_PACE_SECONDS="${FM_HELM_MUTATION_PACE_SECONDS:-0}" \
     FM_FAKE_GH_LATENCY="${FM_FAKE_GH_LATENCY:-}" \
     FM_FAKE_GH_FAIL_AFTER="${FM_FAKE_GH_FAIL_AFTER:-}" \
@@ -941,6 +946,44 @@ mv "$case_dir/board-state.json" "$case_dir/board.json"
 out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "partial-write follow-up poll failed: $out"
 [ -z "$out" ] || fail "a sync-owned partial write retriggered the captain-edit poll: $out"
 pass "partial Helm writes report their cause and acknowledge the actual board state"
+
+case_dir="$TMP_ROOT/one-card-failure-does-not-poison-the-next"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] regress-a-task - Regress A (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] regress-b-task - Regress B (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n \
+  --argjson a "$(draft_item regress-a-item regress-a-draft regress-a-task 'Regress A' 'x' 'In flight' flight-status P3 p3-priority)" \
+  --argjson b "$(draft_item regress-b-item regress-b-draft regress-b-task 'Regress B' 'x' 'In flight' flight-status P3 p3-priority)" \
+  '[$a, $b]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "two-card baseline sync failed"
+board_json "$(jq -n \
+  --argjson a "$(draft_item regress-a-item regress-a-draft regress-a-task 'Regress A' 'x' Queued queued-status P3 p3-priority)" \
+  --argjson b "$(draft_item regress-b-item regress-b-draft regress-b-task 'Regress B' 'x' Queued queued-status P3 p3-priority)" \
+  '[$a, $b]')" > "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(FM_FAKE_HELM_MUTATION_ERROR='secondary rate limit; retry after 1' \
+  FM_FAKE_HELM_MUTATION_FAIL_ITEM='regress-a-item' \
+  run_sync "$case_dir" "$fb" --force 2>&1) \
+  || fail "two-card sync exited nonzero: $out"
+printf '%s\n' "$out" | grep -F 'could not update Helm' | grep -F 'regress-a-task' >/dev/null \
+  || fail "the genuinely failed card did not report its own failure: $out"
+if printf '%s\n' "$out" | grep -F 'could not update Helm' | grep -F 'regress-b-task' >/dev/null; then
+  fail "a failed card's stale error leaked onto a later, unrelated card's write: $out"
+fi
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "two-card follow-up poll failed: $out"
+if printf '%s\n' "$out" | grep -F 'regress-b-task' >/dev/null; then
+  fail "a later card's write was not landed, so the poll mistook it for a captain edit: $out"
+fi
+pass "a failed card's write does not mark a later, unrelated card's write as failed"
 
 case_dir="$TMP_ROOT/done-tombstone-resume"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"

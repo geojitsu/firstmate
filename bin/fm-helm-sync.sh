@@ -1321,6 +1321,7 @@ while read_entry; do
     cache_publish_row "$task_id" "$cache_row" \
       || helm_fail_open "could not publish the Helm identity cache"
   fi
+  BOARD_WRITE_DETAIL=
   guard_board_write "$item_id" "$expected"
   guard_status=$?
   if [ "$guard_status" -eq 2 ]; then
