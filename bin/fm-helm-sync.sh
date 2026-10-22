@@ -557,7 +557,7 @@ mutation_retryable() {
   local detail=$1 normalized
   normalized=$(printf '%s' "$detail" | tr '[:upper:]' '[:lower:]')
   case "$normalized" in
-    *secondary*|*rate*limit*|*rate_limited*|*abuse*|*429*|*too*many*requests*) return 0 ;;
+    *secondary*|*rate*limit*|*abuse*|*429*|*too*many*requests*) return 0 ;;
     *temporar*|*timeout*|*timed.out*|*connection*|*reset*|*unavailable*|*502*|*503*|*504*)
       [ "$MUTATION_RETRY_UNKNOWN" -eq 1 ]
       return
