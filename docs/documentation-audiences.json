@@ -529,6 +529,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/bugs/2026-10-22-helm-sync-partial-write-loop.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/calm-mode-feasibility.md",
       "audience": "maintainer-verification"
     },

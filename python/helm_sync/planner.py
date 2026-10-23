@@ -776,9 +776,12 @@ def plan_board(
                 note, _ = _unsupported_repo_note(wanted, state)
                 actions.append(SkipRecreatingDeletedCard(task, f"{tombstone.task}\t{tombstone.item}", note))
                 continue
-            if old is not None and str(wanted.status) != "Done" and old.item and old.item not in item_set:
+            # A retained Done row can outlive a delayed or partial board read.
+            # Suppress creation until the deleted phase records its tombstone;
+            # recreating here would mint a second card for the same task.
+            if old is not None and old.item and old.item not in item_set:
                 note, _ = _unsupported_repo_note(wanted, state)
-                actions.append(SkipRecreatingDeletedCard(task, "", note))
+                actions.append(SkipRecreatingDeletedCard(task, f"{task}\t{old.item}", note))
                 continue
             note, note_changes = _unsupported_repo_note(wanted, state)
             field_writes = _writes(

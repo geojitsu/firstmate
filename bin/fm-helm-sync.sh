@@ -63,6 +63,11 @@
 # the captain's board edits on the cards it never reached still get their
 # reconciliation wakes instead of a backlog push.  helm_fail_open remains the exit for config, auth,
 # parse, and other failures that stop the run before or between card writes.
+# Mutating GraphQL requests are spaced by at least one second and transient
+# secondary-limit, abuse-limit, and transport failures retry with bounded
+# exponential backoff. A failed write is followed by a fresh board read before
+# the poll signature is acknowledged, so partial server-side progress cannot
+# become a captain-edit wake on the next poll.
 #
 # ## Durable progress
 # Every landed card write updates that card's row in state/helm-cards.tsv at
@@ -150,6 +155,15 @@ FORCE=0
 LANDED=
 SYNC_DEADLINE_SECONDS=25
 TOTAL_DEADLINE_SECONDS=120
+HELM_MUTATION_PACE_SECONDS=${FM_HELM_MUTATION_PACE_SECONDS:-1}
+HELM_MUTATION_MAX_ATTEMPTS=4
+MUTATION_LAST_EPOCH=0
+LAST_MUTATION_ERROR=
+MUTATION_RETRY_UNKNOWN=1
+
+case "$HELM_MUTATION_PACE_SECONDS" in
+  ''|*[!0-9]*) HELM_MUTATION_PACE_SECONDS=1 ;;
+esac
 
 helm_cleanup() {
   local status=$?
@@ -192,6 +206,18 @@ run_gh_bounded() {
   kill "$watchdog_pid" 2>/dev/null || true
   wait "$watchdog_pid" 2>/dev/null || true
   return "$status"
+}
+
+pace_mutation() {
+  local now elapsed wait
+  [ "$HELM_MUTATION_PACE_SECONDS" -gt 0 ] || return 0
+  now=$(date +%s)
+  if [ "$MUTATION_LAST_EPOCH" -gt 0 ]; then
+    elapsed=$((now - MUTATION_LAST_EPOCH))
+    wait=$((HELM_MUTATION_PACE_SECONDS - elapsed))
+    [ "$wait" -le 0 ] || sleep "$wait"
+  fi
+  MUTATION_LAST_EPOCH=$(date +%s)
 }
 
 while [ "$#" -gt 0 ]; do
@@ -507,25 +533,115 @@ guard_board_write() {
   [ "$expected" = "$actual" ] || return 2
 }
 
-graphql_mutation() {
-  local query=$1 remaining
-  shift
-  remaining=$(( SYNC_DEADLINE - $(date +%s) ))
-  [ "$remaining" -gt 0 ] || return 1
-  if ! run_gh_bounded "$remaining" gh api graphql "$@" --field "query=$query" >"$TMP_RESPONSE" 2>"$TMP_RESPONSE_ERROR"; then
-    return 1
+mutation_error_detail() {
+  local status=$1 response_detail='' stderr_detail=''
+  if [ -s "$TMP_RESPONSE" ]; then
+    response_detail=$(jq -r '[.errors[]? | ((.type // "GraphQL") + ": " + (.message // "unknown GraphQL error"))] | join("; ")' \
+      "$TMP_RESPONSE" 2>/dev/null || true)
   fi
-  jq -e '(.errors // []) | length == 0' "$TMP_RESPONSE" >/dev/null 2>&1
+  if [ -s "$TMP_RESPONSE_ERROR" ]; then
+    stderr_detail=$(tr '\n' ' ' <"$TMP_RESPONSE_ERROR" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+  fi
+  if [ -n "$response_detail" ] && [ -n "$stderr_detail" ]; then
+    printf '%s (stderr: %s)' "$response_detail" "$stderr_detail"
+  elif [ -n "$response_detail" ]; then
+    printf '%s' "$response_detail"
+  elif [ -n "$stderr_detail" ]; then
+    printf '%s (gh api exit %s)' "$stderr_detail" "$status"
+  else
+    printf 'gh api graphql failed with exit %s' "$status"
+  fi
+}
+
+mutation_retryable() {
+  local detail=$1 normalized
+  normalized=$(printf '%s' "$detail" | tr '[:upper:]' '[:lower:]')
+  case "$normalized" in
+    *secondary*|*rate*limit*|*abuse*|*429*|*too*many*requests*) return 0 ;;
+    *temporar*|*timeout*|*timed.out*|*connection*|*reset*|*unavailable*|*502*|*503*|*504*)
+      [ "$MUTATION_RETRY_UNKNOWN" -eq 1 ]
+      return
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+retry_delay_for() {
+  local detail=$1 attempt=$2 retry_after
+  retry_after=$(printf '%s\n' "$detail" | sed -nE 's/.*retry[[:space:]]+after[[:space:]]+([0-9]+).*/\1/p' | sed -n '1p')
+  if [ -n "$retry_after" ]; then
+    printf '%s\n' "$retry_after"
+  else
+    printf '%s\n' $((2 ** (attempt - 1)))
+  fi
+}
+
+graphql_mutation() {
+  local query=$1 remaining status detail delay attempt=1
+  shift
+  LAST_MUTATION_ERROR=
+  while :; do
+    pace_mutation
+    remaining=$(( SYNC_DEADLINE - $(date +%s) ))
+    if [ "$remaining" -le 0 ]; then
+      LAST_MUTATION_ERROR='Helm sync write deadline expired before the request'
+      return 1
+    fi
+    if run_gh_bounded "$remaining" gh api graphql "$@" --field "query=$query" >"$TMP_RESPONSE" 2>"$TMP_RESPONSE_ERROR"; then
+      status=0
+    else
+      status=$?
+    fi
+    if [ "$status" -eq 0 ] && jq -e '(.errors // []) | length == 0' "$TMP_RESPONSE" >/dev/null 2>&1; then
+      LAST_MUTATION_ERROR=
+      return 0
+    fi
+    detail=$(mutation_error_detail "$status")
+    LAST_MUTATION_ERROR=$detail
+    if [ "$attempt" -ge "$HELM_MUTATION_MAX_ATTEMPTS" ] || ! mutation_retryable "$detail"; then
+      return 1
+    fi
+    delay=$(retry_delay_for "$detail" "$attempt")
+    remaining=$(( SYNC_DEADLINE - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || return 1
+    [ "$delay" -le "$remaining" ] || delay=$remaining
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
 }
 
 # helm_graphql_call <field-args...> - the bounded `gh api graphql` call
 # fm_helm_ensure_field_options uses to provision a missing Project option on
 # the current board. Requires SYNC_DEADLINE to already be set for that board.
 helm_graphql_call() {
-  local remaining
-  remaining=$(( SYNC_DEADLINE - $(date +%s) ))
-  [ "$remaining" -gt 0 ] || return 1
-  run_gh_bounded "$remaining" gh api graphql "$@"
+  local remaining status detail delay attempt=1
+  LAST_MUTATION_ERROR=
+  while :; do
+    pace_mutation
+    remaining=$(( SYNC_DEADLINE - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || return 1
+    if run_gh_bounded "$remaining" gh api graphql "$@" >"$TMP_RESPONSE" 2>"$TMP_RESPONSE_ERROR"; then
+      status=0
+    else
+      status=$?
+    fi
+    if [ "$status" -eq 0 ] && jq -e '(.errors // []) | length == 0' "$TMP_RESPONSE" >/dev/null 2>&1; then
+      LAST_MUTATION_ERROR=
+      cat "$TMP_RESPONSE"
+      return 0
+    fi
+    detail=$(mutation_error_detail "$status")
+    LAST_MUTATION_ERROR=$detail
+    if [ "$attempt" -ge "$HELM_MUTATION_MAX_ATTEMPTS" ] || ! mutation_retryable "$detail"; then
+      return 1
+    fi
+    delay=$(retry_delay_for "$detail" "$attempt")
+    remaining=$(( SYNC_DEADLINE - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || return 1
+    [ "$delay" -le "$remaining" ] || delay=$remaining
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
 }
 
 # missing_project_options <board-json> <desired-json> - print the comma
@@ -614,11 +730,17 @@ create_draft() {
       }
     }
   }'
+  # A transport failure after addProjectV2DraftIssue is ambiguous: retrying the
+  # create blindly could mint a duplicate. Rate-limit responses are retried by
+  # graphql_mutation; unknown transport outcomes are left for the next fresh
+  # board plan to adopt by marker instead.
+  MUTATION_RETRY_UNKNOWN=0
   graphql_mutation "$query" \
     --field "projectId=$PROJECT_ID" \
     --field "title=$title" \
     --field "body=$body" \
-    || return 1
+    || { MUTATION_RETRY_UNKNOWN=1; return 1; }
+  MUTATION_RETRY_UNKNOWN=1
   CREATED_ITEM_ID=$(jq -r '.data.addProjectV2DraftIssue.projectItem.id // empty' "$TMP_RESPONSE") || return 1
   [ -n "$CREATED_ITEM_ID" ]
 }
@@ -708,7 +830,22 @@ fi
 # read plus its landed patches, and keep a stopped forced run forced on its
 # next run.
 publish_progress() {
-  local signature board_key poll_tmp
+  local signature board_key poll_tmp refreshed_board
+  if [ "${BOARD_WRITE_FAILURE:-0}" -eq 1 ] && [ "${BOARD_FAILURE_REFRESHED:-0}" -eq 0 ]; then
+    BOARD_FAILURE_REFRESHED=1
+    BOARD_READ_SEQUENCE=$((BOARD_READ_SEQUENCE + 1))
+    refreshed_board="$BOARDS_DIR/board-$BOARD_INDEX-after-failure.json"
+    if ! read_board "$BOARD_OWNER" "$BOARD_NUMBER" "$refreshed_board"; then
+      # Do not fold the pre-write snapshot or the optimistic landed ledger into
+      # the poll baseline when the authoritative reread failed. The next poll
+      # will retry the real board read instead of acknowledging a guess.
+      LANDED=
+      return 1
+    fi
+    BOARD_JSON="$refreshed_board"
+    LANDED="$TMP_DIR/landed-$BOARD_INDEX-after-failure.tsv"
+    : >"$LANDED"
+  fi
   [ -n "$BOARD_JSON" ] && [ -n "$LANDED" ] || return 0
   signature=$(jq -r --rawfile landed "$LANDED" \
     "$(fm_helm_landed_patch_program) | $(fm_helm_board_signature_program)" "$BOARD_JSON" \
@@ -777,6 +914,19 @@ cache_remove_row() {
   awk -F '\t' -v t="$task_id" '$1 != t' "$CACHE_WORK" >"$tmp" || return 1
   mv -f -- "$tmp" "$CACHE_WORK" || return 1
   publish_file "$CACHE_WORK" "$CARDS_FILE"
+}
+
+# Publish a tombstone as soon as a plan proves that a cached card is absent.
+# Keep older tombstones in the durable file during a partial run; the complete
+# run's final fold is still responsible for dropping tombstones whose cards
+# reappeared or whose tasks left the backlog.
+deleted_publish_tombstone() {
+  local tombstone=$1 tombstone_tmp
+  [ -n "$tombstone" ] || return 0
+  printf '%s\n' "$tombstone" >>"$NEW_DELETED" || return 1
+  tombstone_tmp=$(mktemp "$TMP_DIR/deleted-publish.XXXXXX") || return 1
+  cat -- "$OLD_DELETED" "$NEW_DELETED" | awk 'NF > 0' | sort -u >"$tombstone_tmp" || return 1
+  publish_file "$tombstone_tmp" "$DELETED_FILE"
 }
 
 # Wake keys already queued, plus every key this run raises: one wake per key.
@@ -948,6 +1098,8 @@ process_board() {
   local owner=$1 number=$2 key="$1/$2" board_file group_desired
   local board_now board_budget schema_ok missing_projects
   BOARD_WRITE_FAILURE=0
+  BOARD_FAILURE_REFRESHED=0
+  BOARD_WRITE_DETAIL=
   BOARD_OWNER=$owner
   BOARD_NUMBER=$number
   BOARD_INDEX=$((BOARD_INDEX + 1))
@@ -1018,7 +1170,7 @@ process_board() {
   fi
   if [ -n "$missing_projects" ]; then
     if ! fm_helm_ensure_field_options helm_graphql_call "$PROJECT_ID" Project "$missing_projects"; then
-      board_failure "$key" "provision: could not provision the Project field option for $missing_projects"
+      board_failure "$key" "provision: ${LAST_MUTATION_ERROR:-could not provision the Project field option for $missing_projects}"
       publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
       return 0
     fi
@@ -1092,7 +1244,7 @@ while read_entry; do
       continue
       ;;
     record:skip)
-      [ -z "$tombstone" ] || printf '%s\n' "$tombstone" >>"$NEW_DELETED"
+      deleted_publish_tombstone "$tombstone" || helm_fail_open "could not publish the deleted Helm tombstone"
       cache_remove_row "$task_id" || helm_fail_open "could not remove the deleted Helm identity"
       apply_divergence_ops "$divergence_ops" || helm_fail_open "could not update Helm divergence memory"
       continue
@@ -1124,14 +1276,14 @@ while read_entry; do
     missing:close)
       ;;
     deleted:retain)
-      printf '%s\n' "$tombstone" >>"$NEW_DELETED"
+      deleted_publish_tombstone "$tombstone" || helm_fail_open "could not publish the deleted Helm tombstone"
       cache_remove_row "$task_id" || helm_fail_open "could not remove the retained Helm identity"
       continue
       ;;
     deleted:hold)
       backlog_hold_for_captain "$home_path" "$task_id" "$hold_reason" \
         || helm_fail_open "could not hold deleted Helm task $task_id"
-      printf '%s\n' "$tombstone" >>"$NEW_DELETED"
+      deleted_publish_tombstone "$tombstone" || helm_fail_open "could not publish the deleted Helm tombstone"
       cache_remove_row "$task_id" || helm_fail_open "could not remove the deleted Helm identity"
       raise_wakes "$wakes" \
         || printf 'fm-helm-sync: could not enqueue the Helm card deletion for %s\n' "$task_id" >&2
@@ -1156,7 +1308,8 @@ while read_entry; do
   fi
   if [ "$action" = create ]; then
     if ! create_draft "$title" "$body"; then
-      printf 'fm-helm-sync: could not create the Helm card for %s\n' "$task_id" >&2
+      BOARD_WRITE_DETAIL=${LAST_MUTATION_ERROR:-"the create request failed without a GitHub diagnostic"}
+      printf 'fm-helm-sync: could not create the Helm card for %s: %s\n' "$task_id" "$BOARD_WRITE_DETAIL" >&2
       FAILED=$((FAILED + 1))
       BOARD_WRITE_FAILURE=1
       continue
@@ -1168,21 +1321,26 @@ while read_entry; do
     cache_publish_row "$task_id" "$cache_row" \
       || helm_fail_open "could not publish the Helm identity cache"
   fi
+  BOARD_WRITE_DETAIL=
   guard_board_write "$item_id" "$expected"
   guard_status=$?
   if [ "$guard_status" -eq 2 ]; then
     GUARD_CONFLICT=1
     break
+  elif [ "$guard_status" -ne 0 ]; then
+    BOARD_WRITE_DETAIL='the pre-write board reread failed'
+  elif ! write_card "$item_id" "$draft_id" "$title" "$body" "$field_writes"; then
+    BOARD_WRITE_DETAIL=${LAST_MUTATION_ERROR:-"the write request failed without a GitHub diagnostic"}
   fi
-  if [ "$guard_status" -ne 0 ] || ! write_card "$item_id" "$draft_id" "$title" "$body" "$field_writes"; then
+  if [ "$guard_status" -ne 0 ] || [ -n "$BOARD_WRITE_DETAIL" ]; then
     FAILED=$((FAILED + 1))
     BOARD_WRITE_FAILURE=1
     if [ "$action" = close ]; then
-      printf 'fm-helm-sync: could not close the missing Helm task %s\n' "$task_id" >&2
+      printf 'fm-helm-sync: could not close the missing Helm task %s: %s\n' "$task_id" "$BOARD_WRITE_DETAIL" >&2
     elif [ -n "$field_writes" ]; then
-      printf 'fm-helm-sync: could not update Helm %s for %s\n' "$(first_field_name "$field_writes")" "$task_id" >&2
+      printf 'fm-helm-sync: could not update Helm %s for %s: %s\n' "$(first_field_name "$field_writes")" "$task_id" "$BOARD_WRITE_DETAIL" >&2
     else
-      printf 'fm-helm-sync: could not update the Helm card content for %s\n' "$task_id" >&2
+      printf 'fm-helm-sync: could not update the Helm card content for %s: %s\n' "$task_id" "$BOARD_WRITE_DETAIL" >&2
     fi
     continue
   fi
@@ -1199,9 +1357,15 @@ while read_entry; do
   cache_publish_row "$task_id" "$cache_row" || helm_fail_open "could not publish the Helm identity cache"
 done
 exec 3<&-
-publish_progress || helm_fail_open "could not publish Helm board acknowledgement"
+if ! publish_progress; then
+  if [ "$BOARD_WRITE_FAILURE" -eq 1 ]; then
+    printf 'fm-helm-sync: board acknowledgement deferred until the next successful board read\n' >&2
+  else
+    helm_fail_open "could not publish Helm board acknowledgement"
+  fi
+fi
 if [ "$BOARD_WRITE_FAILURE" -eq 1 ]; then
-    board_failure "$key" "write: one or more board writes failed"
+    board_failure "$key" "write: one or more board writes failed (${BOARD_WRITE_DETAIL:-unknown cause})"
   elif [ "$owner" = "$RETAIN_OWNER" ] && [ "$number" = "$RETAIN_NUMBER" ]; then
     RETAIN_INDEXED=1
   fi

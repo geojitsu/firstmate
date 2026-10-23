@@ -196,6 +196,15 @@ if [ "${1:-}" = api ]; then
           && mv "$FM_FAKE_BOARD_STATE.next" "$FM_FAKE_BOARD_STATE"
         printf 'applied itemId=%s fieldId=%s optionId=%s\n' "$item_id" "$field_id" "$option_id" >> "$FM_FAKE_GH_LOG"
       done
+      # FM_FAKE_HELM_MUTATION_FAIL_ITEM, when set alongside FM_FAKE_HELM_MUTATION_ERROR,
+      # narrows the forced failure to that one item's writes so a test can prove a
+      # failing card does not poison a later, unrelated card's write.
+      if [ -n "${FM_FAKE_HELM_MUTATION_ERROR:-}" ] \
+        && { [ -z "${FM_FAKE_HELM_MUTATION_FAIL_ITEM:-}" ] || [ "$item_id" = "$FM_FAKE_HELM_MUTATION_FAIL_ITEM" ]; }; then
+        jq -n --arg message "$FM_FAKE_HELM_MUTATION_ERROR" \
+          '{errors:[{type:"RATE_LIMITED",message:$message}]}'
+        exit 0
+      fi
       printf '%s\n' '{"data":{"draft":{"draftIssue":{"id":"updated-draft"}},"w0":{"projectV2Item":{"id":"updated-item"}}}}' ;;
     *cursor=page-2*)
       cat "$FM_FAKE_BOARD_PAGE_2" ;;
@@ -275,6 +284,9 @@ EOF
     FM_FAKE_BOARD_AFTER_SYNC="${FM_FAKE_BOARD_AFTER_SYNC:-}" \
     FM_FAKE_BOARD_PREWRITE="${FM_FAKE_BOARD_PREWRITE:-}" \
     FM_FAKE_HELM_MUTATION_STALL="${FM_FAKE_HELM_MUTATION_STALL:-}" \
+    FM_FAKE_HELM_MUTATION_ERROR="${FM_FAKE_HELM_MUTATION_ERROR:-}" \
+    FM_FAKE_HELM_MUTATION_FAIL_ITEM="${FM_FAKE_HELM_MUTATION_FAIL_ITEM:-}" \
+    FM_HELM_MUTATION_PACE_SECONDS="${FM_HELM_MUTATION_PACE_SECONDS:-0}" \
     FM_FAKE_GH_LATENCY="${FM_FAKE_GH_LATENCY:-}" \
     FM_FAKE_GH_FAIL_AFTER="${FM_FAKE_GH_FAIL_AFTER:-}" \
     PATH="$fb:$PATH" \
@@ -911,6 +923,102 @@ mv "$case_dir/after-sync-board.json" "$case_dir/board.json"
 out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "post-sync poll failed: $out"
 [ -z "$out" ] || fail "a board write caused a false captain-edit wake: $out"
 pass "a backlog-driven board sync acknowledges the poll signature"
+
+case_dir="$TMP_ROOT/partial-write-poll"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] partial-write-task - Partial write task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n --argjson a "$(draft_item partial-write-item partial-write-draft partial-write-task 'Partial write task' 'x' 'In flight' flight-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "partial-write baseline sync failed"
+board_json "$(jq -n --argjson a "$(draft_item partial-write-item partial-write-draft partial-write-task 'Partial write task' 'x' Queued queued-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(FM_FAKE_HELM_MUTATION_ERROR='secondary rate limit; retry after 1' run_sync "$case_dir" "$fb" --force 2>&1) \
+  || fail "partial-write sync exited nonzero: $out"
+assert_contains "$out" "secondary rate limit" "a failed Helm write reports GitHub's error"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "partial-write follow-up poll failed: $out"
+[ -z "$out" ] || fail "a sync-owned partial write retriggered the captain-edit poll: $out"
+pass "partial Helm writes report their cause and acknowledge the actual board state"
+
+case_dir="$TMP_ROOT/one-card-failure-does-not-poison-the-next"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] regress-a-task - Regress A (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
+- [ ] regress-b-task - Regress B (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
+## Done
+EOF
+board_json "$(jq -n \
+  --argjson a "$(draft_item regress-a-item regress-a-draft regress-a-task 'Regress A' 'x' 'In flight' flight-status P3 p3-priority)" \
+  --argjson b "$(draft_item regress-b-item regress-b-draft regress-b-task 'Regress B' 'x' 'In flight' flight-status P3 p3-priority)" \
+  '[$a, $b]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "two-card baseline sync failed"
+board_json "$(jq -n \
+  --argjson a "$(draft_item regress-a-item regress-a-draft regress-a-task 'Regress A' 'x' Queued queued-status P3 p3-priority)" \
+  --argjson b "$(draft_item regress-b-item regress-b-draft regress-b-task 'Regress B' 'x' Queued queued-status P3 p3-priority)" \
+  '[$a, $b]')" > "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(FM_FAKE_HELM_MUTATION_ERROR='secondary rate limit; retry after 1' \
+  FM_FAKE_HELM_MUTATION_FAIL_ITEM='regress-a-item' \
+  run_sync "$case_dir" "$fb" --force 2>&1) \
+  || fail "two-card sync exited nonzero: $out"
+printf '%s\n' "$out" | grep -F 'could not update Helm' | grep -F 'regress-a-task' >/dev/null \
+  || fail "the genuinely failed card did not report its own failure: $out"
+if printf '%s\n' "$out" | grep -F 'could not update Helm' | grep -F 'regress-b-task' >/dev/null; then
+  fail "a failed card's stale error leaked onto a later, unrelated card's write: $out"
+fi
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+out=$(run_poll "$case_dir" "$fb" 2>&1) || fail "two-card follow-up poll failed: $out"
+if printf '%s\n' "$out" | grep -F 'regress-b-task' >/dev/null; then
+  fail "a later card's write was not landed, so the poll mistook it for a captain edit: $out"
+fi
+pass "a failed card's write does not mark a later, unrelated card's write as failed"
+
+case_dir="$TMP_ROOT/done-tombstone-resume"
+mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"
+fb=$(install_fakes "$case_dir")
+printf '{"owner":"fixture-owner","number":999}\n' > "$case_dir/home/config/helm.json"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Done
+- [x] stale-done-task - Stale Done task (repo: fixture-firstmate) (kind: ship) (done: 2026-09-09)
+## Queued
+EOF
+board_json "$(jq -n --argjson a "$(draft_item stale-done-item stale-done-draft stale-done-task 'Stale Done task' 'x' Done done-status P3 p3-priority)" '[$a]')" > "$case_dir/board.json"
+run_sync "$case_dir" "$fb" --force >/dev/null 2>&1 || fail "Done-tombstone seed sync failed"
+cat > "$case_dir/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Done
+- [x] stale-done-task - Stale Done task (repo: fixture-firstmate) (kind: ship) (done: 2026-09-09)
+## Queued
+- [ ] resume-task - Resume task (repo: fixture-firstmate) (kind: ship) (since: 2026-09-09)
+EOF
+board_json '[]' > "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(FM_FAKE_GH_FAIL_AFTER=1 run_sync "$case_dir" "$fb" --force 2>&1) \
+  || fail "Done-tombstone partial sync exited nonzero: $out"
+grep -F $'stale-done-task\tstale-done-item' "$case_dir/home/state/helm-deleted.tsv" >/dev/null \
+  || fail "a stale Done card was not tombstoned before the run became partial"
+mv "$case_dir/board-state.json" "$case_dir/board.json"
+: > "$case_dir/gh.log"
+out=$(run_sync "$case_dir" "$fb" --force 2>&1) || fail "Done-tombstone resume sync failed: $out"
+if grep -F 'title=Stale Done task' "$case_dir/gh.log" | grep -F 'addProjectV2DraftIssue' >/dev/null; then
+  fail "a stale Done card was recreated during resume"
+fi
+pass "a partial run durably tombstones a stale Done card before resuming"
 
 case_dir="$TMP_ROOT/prewrite-conflict"
 mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/home/state"

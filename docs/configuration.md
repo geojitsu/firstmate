@@ -143,6 +143,9 @@ Every landed card write is recorded in `state/helm-cards.tsv` immediately, so a 
 A run that reaches its budget or cannot land a card request prints `fm-helm-sync: partial: N cards remain` and exits 0; the watcher stays silent for that line, and the next check resumes from the recorded progress rather than starting over.
 An external interruption, including the watcher's check timeout, can end without that line, but the next run still uses the recorded card rows.
 A `--force` run that reaches the partial path leaves `state/.helm-sync-resume` so the next run is forced too, which keeps the captain's board edits on the cards it never reached on the reconciliation path instead of the backlog-wins path.
+Mutating GraphQL requests are serialized with a one-second minimum interval and transient secondary-limit, abuse-limit, and transport failures use bounded backoff retries.
+When a write fails, the sync rereads the board before publishing its poll signature; if that recovery read is unavailable, it leaves the previous signature unacknowledged and reports a partial run for the next check.
+The test-only `FM_HELM_MUTATION_PACE_SECONDS` environment variable can set the interval to `0` in the fixture harness; do not set it in an operating home.
 
 Field authority: `data/backlog.md` in the owning home is authoritative for a card's title, body, kind, repository, priority, and lifecycle status.
 When a backlog row contains a GitHub `/pull/<positive number>` or GitLab `/-/merge_requests/<positive number>` URL, the card body includes it as a `PR` fact.
@@ -157,6 +160,7 @@ GitHub Projects has no conditional or versioned mutation, so the tiny interval b
 The next reverse poll detects a divergence in that interval and raises the same reconciliation wake.
 The script never deletes a card and never spawns work.
 The sync records each request and unresolved field divergence with durable markers and queue keys, so repeating an unchanged board edit never enqueues duplicate wakes.
+For a task retained in `Done`, a cached card item missing from a fresh board snapshot is treated as a deleted-card candidate until the deleted phase records its tombstone; this prevents a delayed or partial read from creating a second card.
 `state/helm-cards.tsv` (mode 0600) maps cards to tasks and stores the per-field board baselines used for reconciliation.
 The sync rebuilds the cache silently from the board when absent, and the `bin/fm-helm-sync.sh` header owns its row format and the per-card publication rule.
 
